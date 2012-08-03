@@ -72,8 +72,8 @@ class ParenState {
   bool operator!=(const ParenState<A> &p) const { return !(p == *this); }
 
   bool operator<(const ParenState<A> &p) const {
-    return paren_id < this->paren.id ||
-        (p.paren_id == this->paren.id && p.state_id < this->state_id);
+    return paren_id < this->paren_id ||
+        (p.paren_id == this->paren_id && p.state_id < this->state_id);
   }
 
  private:
