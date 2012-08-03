@@ -25,3 +25,4 @@ src/extensions/pdt/pdtreverse
 src/extensions/pdt/pdtshortestpath
 stamp-h1
 stamp-h2
+build
