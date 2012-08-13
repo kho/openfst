@@ -37,33 +37,45 @@ struct PdtNShortestPathOptions {
       keep_parentheses(kp) {}
 };
 
+template <class Arc> PdtNShortestPath;
+
 template <class Arc>
 class PdtNShortestPathData {
- public:
+ private:
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight Weight;
   typedef typename Arc::Label Label;
 
   typedef int ItemId;
   static const ItemId kNoItemId = -1;
+  static const StateId kSuperfinal = -2;
 
-  struct ItemParent {
+  class ItemParent {
+   public:
+    // Factory methods
     static ItemParent Axiom() {
       return ItemParent(kAxiom);
     }
 
     static ItemParent Scan(ItemId item, const Arc &arc) {
-      return ItemParent(kScan, item, arc.ilabel);
+      return ItemParent(kScan, item, arc.ilabel, arc.olabel);
     }
 
-    static ItemParent Complete(ItemId item1, const Arc &arc1, ItemId item2, const Arc &arc2) {
-      return ItemParent(kComplete, item1, label1, item2, label2);
+    static ItemParent Complete(ItemId item1, const Arc &arc1,
+                               ItemId item2, const Arc &arc2,
+                               bool keep_parens = true) {
+      return ItemParent(kComplete,
+                        item1, keep_parens ? arc1.ilabel : 0, arc1.olabel,
+                        item2, keep_parens ? arc2.ilabel : 0, arc2.olabel);
     }
 
+   private:
     ItemParent(int8 r = kNoRule,
-               ItemId it1 = kNoItemId, Label lb1 = kNoLabel,
-               ItemId it2 = kNoItemId, Label lb2 = kNoLabel) :
-        rule(r), item1(it1), item2(it2), label1(lb1), label2(lb2) {}
+               ItemId it1 = kNoItemId, Label ilb1 = kNoLabel, Label olb1 = kNoLabel,
+               ItemId it2 = kNoItemId, Label ilb2 = kNoLabel, Label olb2 = kNoLabel) :
+        rule(r),
+        item1(it1), ilabel1(ilb1), olabel1(olb1),
+        item2(it2), ilabel2(ilb2), olabel2(olb2) {}
 
     static const int8 kNoRule = -1;
     static const int8 kAxiom = 0;
@@ -74,39 +86,114 @@ class PdtNShortestPathData {
     int8 rule;
     // Data
     ItemId item1, item2;
-    Label label1, label2;
+    Label ilabel1, ilabel2;
+    Label olabel1, olabel2;
+
+    friend class PdtNShortestPathData<Arc>;
   };
 
   struct Item {
     StateId start, state;
-    Weight weight, estimate;
+    Weight weight, priority;
     ItemParent parent;
   };
 
   struct ItemCompare {
     bool operator() (const Item &it1, const Item &it2) {
-      return Plus(it1.estimate, it2.estimate) == it1.estimate;
+      return Plus(it1.priority, it2.priority) == it1.priority;
     }
   };
 
   class ItemIterator {
    public:
-    ItemIterator(StateId state);
-    ItemIterator(StateId start, StateId state);
+    ItemIterator(const PdtNShortestPathData<Arc> &nspdata, StateId state) :
+        start_(kNoStateId), nspdata_(nspdata),
+        state_it_(nspdata.groups_.find(state)), start_it_() {
+      if (state_it_ != nspdata.groups_.end())
+        start_it_ = state_it_->begin();
+    }
 
-    bool Done();
-    void Next();
-    ItemId Value();
+    ItemIterator(const PdtNShortestPathData<Arc> &nspdata,
+                 StateId start, StateId state) :
+        start_(start), nspdata_(nspdata),
+        state_it_(nspdata.groups_.find(state)), start_it_() {
+      if (state_it_ != nspdata.groups_.end())
+        start_it_ = state_it_->find(start);
+    }
+
+    bool Done() {
+      return state_it_ == nspdata_.groups_.end() ||
+          start_it_ == state_it_->end() ||
+          (start_ != kNoStateId && start_it_->first != start_);
+    }
+
+    void Next() {
+      ++start_it_;
+    }
+
+    ItemId Value() {
+      return start_it_->second;
+    }
+
+   private:
+    StateId start_;
+    const PdtNShortestPathData<Arc> &nspdata_;
+    typename unordered_map<StateId, unordered_multimap<StateId, ItemId> >::const_iterator state_it_;
+    typename unordered_multimap<StateId, ItemId>::const_iterator start_it_;
   };
 
-  ItemId AddAxiom(StateId start, StateId state);
-  ItemId AddScan(StateId start, StateId state, ItemId ant, const Arc &arc);
-  ItemId AddComplete(StateId start, StateId state, ItemId ant1, const Arc &open, ItemId ant2, const Arc &close);
+  ItemId AddItem(const Item &item, size_t limit = 0) {
+    ItemId id = kNoItemId;
+    if (!limit || CountItems(item.start, item.state) < limit) {
+      id = items_.length();
+      items_.push_back(item);
+      groups_[item.state].insert(make_pair(item.start, id));
+    }
+    return id;
+  }
 
- private:
-  vector<Item> items;
-  unordered_multimap<StateId, unordered_multimap<StateId, ItemId> > groups;
-  ItemId AddItem();
+  size_t CountItems(StateId start, StateId state) {
+    typename unordered_map<StateId, unordered_multimap<StateId, ItemId> >::const_iterator
+        state_it_ = groups_.find(state);
+    if (state_it_ == groups_.end())
+      return 0;
+    else
+      return state_it_->count(start);
+  }
+
+  const Item &GetItem(ItemId id) {
+    return items_[id];
+  }
+
+  void GetPathLabels(const Item &bottom, vector<pair<Label, Label> > *output) {
+    output.clear();
+    Traverse(bottom.parent, output);
+  }
+
+  void Traverse(const ItemParent &parent, vector<pair<Label, Label> > *output) {
+    switch (parent.rule) {
+      case ItemParent::kAxiom:
+        break;
+      case ItemParent::kScan:
+        Traverse(GetItem(parent.item1).parent, output);
+        output->push_back(make_pair(parent.ilabel1, parent.olabel1));
+        break;
+      case ItemParent::kComplete:
+        Traverse(GetItem(parent.item1).parent, output);
+        output->push_back(make_pair(parent.ilabel1, parent.olabel1));
+        Traverse(GetItem(parent.item2).parent, output);
+        output->push_back(make_pair(parent.ilabel2, parent.olabel2));
+        break;
+      default:
+        FSTERROR() << "PdtNShortestPathData::Traverse: invalid parent rule: `"
+                   << parent.rule << "'";
+    }
+  }
+
+  vector<Item> items_;
+  unordered_map<StateId, unordered_multimap<StateId, ItemId> > groups_;
+
+  friend class PdtNShortestPath<Arc>;
 };
 
 template <class Arc>
@@ -116,11 +203,9 @@ class PdtNShortestPath {
                    const vector<pair<Label, Label> > &parens,
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), ofst_(NULL), parens_(parens),
-      nshortest_(opts.nshortest), max_pop_(opts.max_pop),
-      unique_(opts.unique), keep_parens_(opts.keep_parentheses),
-      error_(false), n_found_(0), n_enqueued_(0) {
-    if ((Weight::Properties() & (kPath | kRightSemiring | kLeftSemiring))
-        != (kPath | kRightSemiring | kLeftSemiring)) {
+      opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL) {
+    if ((Weight::Properties() & (kPath | kRightSemiring | kLeftSemiring)) !=
+        (kPath | kRightSemiring | kLeftSemiring)) {
       FSTERROR() << "PdtNShortestPath: Weight needs to have the path"
                  << " property and be right distributive: " << Weight::Type();
       error_ = true;
@@ -128,6 +213,8 @@ class PdtNShortestPath {
   }
 
   ~PdtNShortestPath() {
+    VLOG(1) << "# of input states: " << CountStates(*ifst_);
+    VLOG(1) << "# of enqueued items: " << n_enqueued_;
     delete ifst_;
   }
 
@@ -188,7 +275,7 @@ class PdtNShortestPath {
     // Compute shortest distance to one of the final states from each state
     ShortestDistance(ifst_, &to_final_, true);
     if (to_final_.length() == 1 && !to_final_[0].Member())
-      FSTERROR() << "PdtNShortestPath: failed to compute FST reverse shortest distance" << endl;
+      FSTERROR() << "PdtNShortestPath: failed to compute reverse FST shortest distance" << endl;
   }
 
   // Assigns paren id to open/close paren labels; then pre-computes the
@@ -226,32 +313,27 @@ class PdtNShortestPath {
 
     while (!q.Empty()) {
       Item item = q.Pop();
-      if (item.start == ifst_->Start() &&
-          ifst_->Final(item.state) != Weight::Zero()) { // goal item
+      ItemId item_id = theorems_.AddItem(item, opts_.max_pop);
+      if (item.start == ifst_->Start() && item.state = NspData::kSuperfinal) { // goal item
         OutputPath(item);
-        if (++n_found_ == nshortest_)
+        if (++n_found_ == opts._nshortest)
           break;
-      }
-      ItemId item_id = theorems_.AddItem(item);
-
-      for (AIter aiter(*ifst_, item.state); !aiter.Done(); aiter.Next()) {
-        const Arc &arc = aiter.Value();
-        ParenIdMap::const_iterator pit = paren_id_map_.find(arc.ilabel);
-        if (pit == paren_id_map_.end()) { // lexical arc
-          Scan(item, item_id, arc);
-        } else {                          // is a paren
-          Label paren_id = pit->second;
-          if (arc.ilabel == parens_[paren_id].first)   // open paren
-            TryCompleteAsItem1(item, item_id, paren_id, arc);
-          else                            // close paren
-            TryCompleteAsItem2(item, item_id, paren_id, arc);
-        }
+      } else if (item_id != NspData::kNoItemId) { // there will not be out-going arcs from a superfinal
+        Weight rho = ifst_->Final(item.state);
+        // If `item.state' is a final state, hallucinate a pseudo-arc
+        // to the superfinal
+        if (rho != Weight::Zero())
+          ProcArc(item, item_id, Arc(0, 0, rho, NspData::kSuperfinal));
+        for (AIter aiter(*ifst_, item.state); !aiter.Done(); aiter.Next())
+          ProcArc(item, item_id, aiter.Value());
       }
     }
+
+    heap_ = NULL;
   }
 
-  // Enqueues all axioms of the form `p \leadsto p: 1` where p is the
-  // start or has incoming arc with open paren.
+  // Enqueues all the axioms of the form `p \leadsto p: 1` where
+  // either p is the start or it has an incoming arc with open paren.
   void EnqueueAxioms() {
     typedef unordered_set<StateId> StateSet;
     StateSet axioms;
@@ -270,22 +352,61 @@ class PdtNShortestPath {
       EnqueueAxiom(*i);
   }
 
+  void EnqueueAxiom(StateId s) {
+    Enqueue(s, s, Weight::One(), ItemParent::Axiom());
+  }
+
   void Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
     Item it = {
       start, state, weight,
-      Times(from_start_[start], Times(weight, to_final_[state])),
+      Times(from_start_[start],
+            state == NspData::kSuperfinal ?
+            weight : Times(weight, to_final_[state])),
       parent
     };
     heap_->Insert(it);
     ++n_enqueued_;
   }
 
-  void EnqueueAxiom(StateId s) {
-    Enqueue(s, s, Weight::One(), ItemParent::Axiom());
+  // Outputs the path induced by `it' to `ofst_'; all epsilon
+  // transitions are kept; if `opts_.keep_parentheses' is false,
+  // parentheses will also become epsilon (this actually happens in
+  // Complete()).
+  void OutputPath(const Item &it) {
+    vector<pair<Label, Label> > path_label;
+    theorems_.GetPathLabels(it, &path_label);
+    if (path_label.empty()) {
+      FSTERROR() << "PdtNShortestPath: trying to output empty path.";
+      error_ = true;
+    }
+    if (opts_.unique)
+      FSTERROR() << "PdtNShortestPath: unique path output is not implemented yet.";
+
+    StateId src = ofst_->Start(), dest = kNoStateId;
+    if (src == kNoStateId) {
+      src = ofst_->AddState();
+      ofst_->SetStart(src);
+    }
+    for (vector<pair<Label, Label> >::const_iterator i = path_label.begin();
+         i != path_label.end(); ++i) {
+        dest = ofst_->AddState();
+        ofst_->AddArc(src, Arc(i->first, i->second, Weight::One(), dest));
+        src = dest;
+    }
+    ofst_->SetFinal(src, it.weight);
   }
 
-  void OutputPath(const Item &it) {
-    // TODO
+  void ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
+    ParenIdMap::const_iterator pit = paren_id_map_.find(arc.ilabel);
+    if (pit == paren_id_map_.end()) { // lexical arc
+      Scan(item, item_id, arc);
+    } else {                          // is a paren
+      Label paren_id = pit->second;
+      if (arc.ilabel == parens_[paren_id].first)   // open paren
+        TryCompleteAsItem1(item, item_id, paren_id, arc);
+      else                            // close paren
+        TryCompleteAsItem2(item, item_id, paren_id, arc);
+    }
   }
 
   void Scan(const Item &item, ItemId item_id, const Arc &arc) {
@@ -298,7 +419,7 @@ class PdtNShortestPath {
                 const Item &item2, ItemId item2_id, const Arc &arc2) {
     Enqueue(item1.start, arc2.nextstate,
             Times(item1.weight, Times(arc1.weight, Times (item2.weight, arc2.weight))),
-            ItemParent::Complete(item1_id, arc1, item2_id, arc2));
+            ItemParent::Complete(item1_id, arc1, item2_id, arc2, opts_.keep_parentheses));
   }
 
   // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
@@ -356,23 +477,18 @@ class PdtNShortestPath {
   Fst<Arc> *ifst_;
   MutableFst<Arc> *ofst_;
   const vector<pair<Label, Label> > &parens_;
-  ParenIdMap paren_id_map_; // open/close paren -> paren id
-
-  vector<Weight> from_start_, to_final_;
-
-  // states with out-going open/close paren arcs; indexed by paren id
-  ParenStatesMap open_paren_, close_paren_;
-
-  size_t nshortest_, max_pop_;
-  bool keep_parens_, unique_;
-
+  PdtNShortestPathOptions opts_;
   bool error_;
-
   size_t n_found_;
   size_t n_enqueued_;
-
-  NspData theorems_;
   PriorityQueue *heap_;
+
+  // These are default initialized.
+  ParenIdMap paren_id_map_; // open/close paren -> paren id
+  vector<Weight> from_start_, to_final_;
+  // states with out-going open/close paren arcs; indexed by paren id
+  ParenStatesMap open_paren_, close_paren_;
+  NspData theorems_;
 
   DISALLOW_COPY_AND_ASSIGN(PdtNShortestPath);
 };
