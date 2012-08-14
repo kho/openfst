@@ -66,8 +66,8 @@ class PdtNShortestPathData {
                                ItemId item2, const Arc &arc2,
                                bool keep_parens = true) {
       return ItemParent(kComplete,
-                        item1, keep_parens ? arc1.ilabel : 0, arc1.olabel,
-                        item2, keep_parens ? arc2.ilabel : 0, arc2.olabel);
+                        item1, keep_parens ? arc1.ilabel : 0, keep_parens ? arc1.olabel : 0,
+                        item2, keep_parens ? arc2.ilabel : 0, keep_parens ? arc2.olabel : 0);
     }
 
    private:
@@ -362,7 +362,8 @@ void PdtNShortestPath<Arc>::DoSearch() {
       OutputPath(item);
       if (++n_found_ == opts_.nshortest)
         break;
-    } else if (item_id != NspData::kNoItemId) { // there will not be out-going arcs from a superfinal
+    } else if (item_id != NspData::kNoItemId && // item must be added
+               item.state != NspData::kSuperfinal) { // there will not be out-going arcs from a superfinal
       Weight rho = ifst_->Final(item.state);
       // If `item.state' is a final state, hallucinate a pseudo-arc
       // to the superfinal
