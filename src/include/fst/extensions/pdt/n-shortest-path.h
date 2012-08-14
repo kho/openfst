@@ -37,7 +37,7 @@ struct PdtNShortestPathOptions {
       keep_parentheses(kp) {}
 };
 
-template <class Arc> PdtNShortestPath;
+template <class Arc> class PdtNShortestPath;
 
 template <class Arc>
 class PdtNShortestPathData {
@@ -166,7 +166,7 @@ class PdtNShortestPathData {
   }
 
   void GetPathLabels(const Item &bottom, vector<pair<Label, Label> > *output) {
-    output.clear();
+    output->clear();
     Traverse(bottom.parent, output);
   }
 
@@ -200,7 +200,7 @@ template <class Arc>
 class PdtNShortestPath {
  public:
   PdtNShortestPath(const Fst<Arc> &ifst,
-                   const vector<pair<Label, Label> > &parens,
+                   const vector<pair<typename Arc::Label, typename Arc::Label> > &parens,
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), ofst_(NULL), parens_(parens),
       opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL) {
@@ -222,9 +222,9 @@ class PdtNShortestPath {
     ClearFst(ofst);
 
     if (ifst_->Start() == kNoStateId)
-      return;
+      return 0;
 
-    PreComputeHeuristic();
+    PreComputeHeuristics();
     PreComputeBalance();
     DoSearch();
 
@@ -291,7 +291,7 @@ class PdtNShortestPath {
       StateId s = siter.Value();
       for (AIter aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
         const Arc &arc = aiter.Value();
-        ParenIdMap::const_iterator pit =
+        typename ParenIdMap::const_iterator pit =
             paren_id_map_.find(arc.ilabel);
         if (pit != paren_id_map_.end()) { // is a paren
           Label paren_id = pit->second;
@@ -314,9 +314,9 @@ class PdtNShortestPath {
     while (!q.Empty()) {
       Item item = q.Pop();
       ItemId item_id = theorems_.AddItem(item, opts_.max_pop);
-      if (item.start == ifst_->Start() && item.state = NspData::kSuperfinal) { // goal item
+      if (item.start == ifst_->Start() && item.state == NspData::kSuperfinal) { // goal item
         OutputPath(item);
-        if (++n_found_ == opts._nshortest)
+        if (++n_found_ == opts_.nshortest)
           break;
       } else if (item_id != NspData::kNoItemId) { // there will not be out-going arcs from a superfinal
         Weight rho = ifst_->Final(item.state);
@@ -341,14 +341,14 @@ class PdtNShortestPath {
     for (SIter siter(*ifst_); !siter.Done(); siter.Next()) {
       for (AIter aiter(siter.Value()); !aiter.Done(); aiter.Next()) {
         const Arc &arc = aiter.Value();
-        ParenIdMap::const_iterator pit =
+        typename ParenIdMap::const_iterator pit =
             paren_id_map_.find(arc.ilabel);
         if (pit != paren_id_map_.end() &&
             arc.ilabel == parens_[pit->second].first) // open paren
           axioms.insert(arc.nextstate);
       }
     }
-    for (StateSet::const_iterator i = axioms.begin(); i != axioms.end(); ++i)
+    for (typename StateSet::const_iterator i = axioms.begin(); i != axioms.end(); ++i)
       EnqueueAxiom(*i);
   }
 
@@ -387,7 +387,7 @@ class PdtNShortestPath {
       src = ofst_->AddState();
       ofst_->SetStart(src);
     }
-    for (vector<pair<Label, Label> >::const_iterator i = path_label.begin();
+    for (typename vector<pair<Label, Label> >::const_iterator i = path_label.begin();
          i != path_label.end(); ++i) {
         dest = ofst_->AddState();
         ofst_->AddArc(src, Arc(i->first, i->second, Weight::One(), dest));
@@ -397,7 +397,7 @@ class PdtNShortestPath {
   }
 
   void ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
-    ParenIdMap::const_iterator pit = paren_id_map_.find(arc.ilabel);
+    typename ParenIdMap::const_iterator pit = paren_id_map_.find(arc.ilabel);
     if (pit == paren_id_map_.end()) { // lexical arc
       Scan(item, item_id, arc);
     } else {                          // is a paren
@@ -428,7 +428,7 @@ class PdtNShortestPath {
     StateId open_dest = arc1.nextstate;
     Label close_label = parens_[paren_id].second;
 
-    for (ParenStatesMap::const_iterator close_it = close_paren_.find(paren_id);
+    for (typename ParenStatesMap::const_iterator close_it = close_paren_.find(paren_id);
          close_it != close_paren_.end() && close_it->first == paren_id;
          ++close_it) {
       StateId close_src = close_it->second;
@@ -453,14 +453,14 @@ class PdtNShortestPath {
     StateId open_dest = item2.start;
     Label open_label = parens_[paren_id].first;
 
-    for (ParenStatesMap::const_iterator open_it = open_paren_.find(paren_id);
+    for (typename ParenStatesMap::const_iterator open_it = open_paren_.find(paren_id);
          open_it != open_paren_.end() && open_it->first == paren_id;
          ++open_it) {
       StateId open_src = open_it->second;
       for (AIter arc1_iter(*ifst_, open_src); !arc1_iter.Done();
            arc1_iter.Next()) {
         const Arc &arc1 = arc1_iter.Value();
-        if (arc1.ilabel = open_label && arc1.nextstate == open_dest) {
+        if (arc1.ilabel == open_label && arc1.nextstate == open_dest) {
           for (ItemIterator item1_iter(theorems_, open_src);
                !item1_iter.Done(); item1_iter.Next()) {
             ItemId item1_id = item1_iter.Value();
