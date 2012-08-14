@@ -111,7 +111,7 @@ class PdtNShortestPathData {
         start_(kNoStateId), nspdata_(nspdata),
         state_it_(nspdata.groups_.find(state)), start_it_() {
       if (state_it_ != nspdata.groups_.end())
-        start_it_ = state_it_->begin();
+        start_it_ = state_it_->second.begin();
     }
 
     ItemIterator(const PdtNShortestPathData<Arc> &nspdata,
@@ -119,12 +119,12 @@ class PdtNShortestPathData {
         start_(start), nspdata_(nspdata),
         state_it_(nspdata.groups_.find(state)), start_it_() {
       if (state_it_ != nspdata.groups_.end())
-        start_it_ = state_it_->find(start);
+        start_it_ = state_it_->second.find(start);
     }
 
     bool Done() {
       return state_it_ == nspdata_.groups_.end() ||
-          start_it_ == state_it_->end() ||
+          start_it_ == state_it_->second.end() ||
           (start_ != kNoStateId && start_it_->first != start_);
     }
 
@@ -146,7 +146,7 @@ class PdtNShortestPathData {
   ItemId AddItem(const Item &item, size_t limit = 0) {
     ItemId id = kNoItemId;
     if (!limit || CountItems(item.start, item.state) < limit) {
-      id = items_.length();
+      id = items_.size();
       items_.push_back(item);
       groups_[item.state].insert(make_pair(item.start, id));
     }
@@ -159,7 +159,7 @@ class PdtNShortestPathData {
     if (state_it_ == groups_.end())
       return 0;
     else
-      return state_it_->count(start);
+      return state_it_->second.count(start);
   }
 
   const Item &GetItem(ItemId id) {
@@ -310,13 +310,13 @@ void PdtNShortestPath<Arc>::ClearFst(MutableFst<Arc> *ofst) {
 template <class Arc> inline
 void PdtNShortestPath<Arc>::PreComputeHeuristics() {
   // Compute shortest distance from the start to each state
-  ShortestDistance(ifst_, &from_start_);
-  if (from_start_.length() == 1 && !from_start_[0].Member())
+  ShortestDistance(*ifst_, &from_start_);
+  if (from_start_.size() == 1 && !from_start_[0].Member())
     FSTERROR() << "PdtNShortestPath: failed to compute FST shortest distance" << endl;
 
   // Compute shortest distance to one of the final states from each state
-  ShortestDistance(ifst_, &to_final_, true);
-  if (to_final_.length() == 1 && !to_final_[0].Member())
+  ShortestDistance(*ifst_, &to_final_, true);
+  if (to_final_.size() == 1 && !to_final_[0].Member())
     FSTERROR() << "PdtNShortestPath: failed to compute reverse FST shortest distance" << endl;
 }
 
@@ -384,7 +384,7 @@ void PdtNShortestPath<Arc>::EnqueueAxioms() {
   StateSet axioms;
   axioms.insert(ifst_->Start());
   for (SIter siter(*ifst_); !siter.Done(); siter.Next()) {
-    for (AIter aiter(siter.Value()); !aiter.Done(); aiter.Next()) {
+    for (AIter aiter(*ifst_, siter.Value()); !aiter.Done(); aiter.Next()) {
       const Arc &arc = aiter.Value();
       typename ParenIdMap::const_iterator pit =
           paren_id_map_.find(arc.ilabel);
