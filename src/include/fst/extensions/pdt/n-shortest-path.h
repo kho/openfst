@@ -86,9 +86,10 @@ class PdtNShortestPathData {
     // Which rule is used?
     int8 rule;
     // Data
-    ItemId item1, item2;
-    Label ilabel1, ilabel2;
-    Label olabel1, olabel2;
+    ItemId item1;
+    Label ilabel1, olabel1;
+    ItemId item2;
+    Label ilabel2, olabel2;
 
     friend class PdtNShortestPathData<Arc>;
   };
