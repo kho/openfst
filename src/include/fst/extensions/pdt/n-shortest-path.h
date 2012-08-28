@@ -32,7 +32,7 @@ struct PdtNShortestPathOptions {
   bool keep_parentheses;  // whether to keep parentheses in the output
   PdtNShortestPathOptions(size_t n,
                           size_t pop_limit = 0,
-                          bool uniq = true,
+                          bool uniq = false,
                           bool kp = false) :
       nshortest(n), max_pop(pop_limit), unique(uniq),
       keep_parentheses(kp) {}
@@ -527,6 +527,25 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem2(const Item &item2, ItemId item2_i
   }
 }
 
-};  // namespace fst
+template <class Arc>
+size_t NShortestPath(const Fst<Arc> &ifst,
+                     const vector<pair<typename Arc::Label,
+                     typename Arc::Label> > &parens,
+                     MutableFst<Arc> *ofst,
+                     const PdtNShortestPathOptions &opts) {
+  PdtNShortestPath<Arc> pnsp(ifst, parens, opts);
+  return pnsp.NShortestPath(ofst);
+}
+
+template <class Arc>
+size_t NShortestPath(const Fst<Arc> &ifst,
+                     const vector<pair<typename Arc::Label,
+                     typename Arc::Label> > &parens,
+                     MutableFst<Arc> *ofst,
+                     size_t n) {
+  return NShortestPath(ifst, parens, ofst, PdtNShortestPathOptions(n));
+}
+
+} // namespace fst
 
 #endif  // FST_EXTENSIONS_PDT_N_SHORTEST_PATH_H__
