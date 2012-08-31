@@ -81,6 +81,10 @@ class PdtParenData {
   PdtParenData(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens) :
       ifst_(ifst.Copy()), parens_(parens), clear_(false) {}
 
+  ~PdtParenData() {
+    delete ifst_;
+  }
+
   // Inits to naive mapping, i.e. stores all opening/closing arcs by
   // their open paren. This must be called before accessing any paren
   // information.
