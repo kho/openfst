@@ -18,6 +18,7 @@
 #define FST_EXTENSIONS_PDT_INSIDE_OUTSIDE_H__
 
 #include <fst/extensions/pdt/paren-data.h>
+#include <fst/queue.h>
 
 #include <tr1/unordered_map>
 using std::tr1::unordered_map;
@@ -138,7 +139,7 @@ class InsideChart {
 };
 
 
-template <class Arc, class Queue>
+template <class Arc, class Queue=FifoQueue<SearchState<Arc> > >
 class PdtInside {
  public:
   typedef typename Arc::Label Label;
