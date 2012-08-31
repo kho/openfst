@@ -102,6 +102,7 @@ class PdtParenData {
     if (!clear_) {
       naive_open_map_.clear();
       naive_close_map_.clear();
+      clear_ = true;
     }
   }
 
