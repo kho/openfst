@@ -38,11 +38,15 @@ class PdtParenData {
     Arc arc;
 
     bool operator==(const FullArc &that) const {
-      return this == &that || (state = that.state && arc == that.arc);
+      return this == &that || (state == that.state
+                               && arc.nextstate == that.arc.nextstate
+                               && arc.ilabel == that.arc.ilabel
+                               && arc.olabel == that.arc.olabel
+                               && arc.weight == that.arc.weight);
     }
 
     struct Hash {
-      size_t operator()(const FullArc &fa) {
+      size_t operator()(const FullArc &fa) const {
         size_t value = fa.state;
         value = 1000003 * value ^ fa.arc.ilabel;
         value = 1000003 * value ^ fa.arc.olabel;
@@ -52,6 +56,8 @@ class PdtParenData {
       }
     };
   };
+
+  typedef unordered_set<FullArc, typename FullArc::Hash> ArcSet;
 
   // Iterator through full arcs
   class Iterator {
@@ -74,6 +80,8 @@ class PdtParenData {
     Iterator(SetIter begin, SetIter end) :
         at_(begin), end_(end) {}
     SetIter at_, end_;
+    template <class A>
+    friend class PdtParenData;
   };
 
   // The constructor does not initialize the mapping; Init() must also
@@ -150,7 +158,6 @@ class PdtParenData {
   }
 
  private:
-  typedef unordered_set<FullArc, typename FullArc::Hash> ArcSet;
   typedef unordered_map<Label, ArcSet> NaiveMap;
   typedef unordered_map<ParenState<Arc>, ArcSet, typename ParenState<Arc>::Hash> SureMap;
 
@@ -168,9 +175,9 @@ class PdtParenData {
       StateId s = siter.Value();
       for (ArcIterator<Fst<Arc> > aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
         const Arc &arc = aiter.Value();
-        Label open_paren = OpenParenId(arc.label);
+        Label open_paren = OpenParenId(arc.ilabel);
         if (open_paren != kNoLabel) {   // paren
-          if (open_paren == arc.label)  // open
+          if (open_paren == arc.ilabel)  // open
             naive_open_map_[open_paren].insert(FullArc(s, arc));
           else                          // close
             naive_close_map_[open_paren].insert(FullArc(s, arc));
@@ -184,7 +191,7 @@ class PdtParenData {
     if (it == map.end())
       return Iterator();
     else
-      return Iterator(it->begin(), it->end());
+      return Iterator(it->second.begin(), it->second.end());
   }
 
   Iterator FindNaive(Label paren, const NaiveMap &map) const {
@@ -192,7 +199,7 @@ class PdtParenData {
     if (it == map.end())
       return Iterator();
     else
-      return Iterator(it->begin(), it->end());
+      return Iterator(it->second.begin(), it->second.end());
   }
 
   const Fst<Arc> *ifst_;
