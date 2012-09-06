@@ -12,6 +12,8 @@
 #include <fst/heap.h>
 #include <fst/mutable-fst.h>
 #include <fst/shortest-distance.h>
+#include <fst/extensions/pdt/paren-data.h>
+#include <fst/extensions/pdt/inside-outside.h>
 
 #include <tr1/unordered_set>
 using std::tr1::unordered_set;
@@ -38,6 +40,7 @@ struct PdtNShortestPathOptions {
       keep_parentheses(kp) {}
 };
 
+namespace pdt {
 template <class Arc> class PdtNShortestPath;
 
 template <class Arc>
@@ -208,13 +211,15 @@ class PdtNShortestPath {
                    const vector<pair<typename Arc::Label, typename Arc::Label> > &parens,
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), ofst_(NULL), parens_(parens),
-      opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL) {
+      opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL),
+      pdata_(ifst, parens) {
     if ((Weight::Properties() & (kPath | kRightSemiring | kLeftSemiring)) !=
         (kPath | kRightSemiring | kLeftSemiring)) {
       FSTERROR() << "PdtNShortestPath: Weight needs to have the path"
                  << " property and be right distributive: " << Weight::Type();
       error_ = true;
     }
+    pdata_.Init();
   }
 
   ~PdtNShortestPath() {
@@ -230,7 +235,6 @@ class PdtNShortestPath {
       return 0;
 
     PreComputeHeuristics();
-    PreComputeBalance();
     DoSearch();
 
     if (error_) ofst->SetProperties(kError, kError);
@@ -253,9 +257,6 @@ class PdtNShortestPath {
   typedef typename NspData::ItemIterator ItemIterator;
   typedef typename NspData::ItemParent ItemParent;
 
-  typedef unordered_map<Label, Label> ParenIdMap; // open/close paren -> paren id (index in `parens_')
-  typedef unordered_multimap<Label, StateId> ParenStatesMap; // paren id -> states with out-going paren arcs
-
   typedef Heap<Item, typename NspData::ItemCompare, false> PriorityQueue;
 
 
@@ -263,7 +264,6 @@ class PdtNShortestPath {
   // empty (i.e. ifst_->Start() != kNoStateId).
   void ClearFst(MutableFst<Arc> *ofst);
   void PreComputeHeuristics();
-  void PreComputeBalance();
   void DoSearch();
   void EnqueueAxioms();
   void EnqueueAxiom(StateId s);
@@ -287,12 +287,8 @@ class PdtNShortestPath {
   size_t n_found_;
   size_t n_enqueued_;
   PriorityQueue *heap_;
-
-  // These are default initialized.
-  ParenIdMap paren_id_map_; // open/close paren -> paren id
-  vector<Weight> from_start_, to_final_;
-  // states with out-going open/close paren arcs; indexed by paren id
-  ParenStatesMap open_paren_, close_paren_;
+  PdtParenData<Arc> pdata_;
+  OutsideChart<Arc> out_chart_;
   NspData theorems_;
 
   DISALLOW_COPY_AND_ASSIGN(PdtNShortestPath);
@@ -310,42 +306,7 @@ void PdtNShortestPath<Arc>::ClearFst(MutableFst<Arc> *ofst) {
 // each state when the input is treated as a plain FST.
 template <class Arc> inline
 void PdtNShortestPath<Arc>::PreComputeHeuristics() {
-  // Compute shortest distance from the start to each state
-  ShortestDistance(*ifst_, &from_start_);
-  if (from_start_.size() == 1 && !from_start_[0].Member())
-    FSTERROR() << "PdtNShortestPath: failed to compute FST shortest distance" << endl;
-
-  // Compute shortest distance to one of the final states from each state
-  ShortestDistance(*ifst_, &to_final_, true);
-  if (to_final_.size() == 1 && !to_final_[0].Member())
-    FSTERROR() << "PdtNShortestPath: failed to compute reverse FST shortest distance" << endl;
-}
-
-// Assigns paren id to open/close paren labels; then pre-computes the
-// source states of open/close paren arcs indexed by paren ids.
-template <class Arc>
-void PdtNShortestPath<Arc>::PreComputeBalance() {
-  for (Label i = 0; i < parens_.size(); ++i) {
-    const pair<Label, Label>  &p = parens_[i];
-    paren_id_map_[p.first] = i;
-    paren_id_map_[p.second] = i;
-  }
-
-  for (SIter siter(*ifst_); !siter.Done(); siter.Next()) {
-    StateId s = siter.Value();
-    for (AIter aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
-      const Arc &arc = aiter.Value();
-      typename ParenIdMap::const_iterator pit =
-          paren_id_map_.find(arc.ilabel);
-      if (pit != paren_id_map_.end()) { // is a paren
-        Label paren_id = pit->second;
-        if (arc.ilabel == parens_[paren_id].first) // open paren
-          open_paren_.insert(make_pair(paren_id, s));
-        else                            // close paren
-          close_paren_.insert(make_pair(paren_id, s));
-      }
-    }
-  }
+  OutsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&out_chart_);
 }
 
 // A* search
@@ -388,10 +349,8 @@ void PdtNShortestPath<Arc>::EnqueueAxioms() {
   for (SIter siter(*ifst_); !siter.Done(); siter.Next()) {
     for (AIter aiter(*ifst_, siter.Value()); !aiter.Done(); aiter.Next()) {
       const Arc &arc = aiter.Value();
-      typename ParenIdMap::const_iterator pit =
-          paren_id_map_.find(arc.ilabel);
-      if (pit != paren_id_map_.end() &&
-          arc.ilabel == parens_[pit->second].first) // open paren
+      Label open_paren = pdata_.OpenParenId(arc.ilabel);
+      if (open_paren == arc.ilabel) // open paren
         axioms.insert(arc.nextstate);
     }
   }
@@ -406,11 +365,10 @@ void PdtNShortestPath<Arc>::EnqueueAxiom(StateId s) {
 
 template <class Arc> inline
 void PdtNShortestPath<Arc>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
+  pair<Weight, Weight> out = out_chart_.OutsideWeight(start, state);
   Item it = {
     start, state, weight,
-    Times(from_start_[start],
-          state == NspData::kSuperfinal ?
-          weight : Times(weight, to_final_[state])),
+    Times(out.first, Times(weight, out.second)),
     parent
   };
   heap_->Insert(it);
@@ -448,16 +406,13 @@ void PdtNShortestPath<Arc>::OutputPath(const Item &it) {
 
 template <class Arc> inline
 void PdtNShortestPath<Arc>::ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
-  typename ParenIdMap::const_iterator pit = paren_id_map_.find(arc.ilabel);
-  if (pit == paren_id_map_.end()) { // lexical arc
+  Label open_paren = pdata_.OpenParenId(arc.ilabel);
+  if (open_paren == kNoLabel)           // lexical arc
     Scan(item, item_id, arc);
-  } else {                          // is a paren
-    Label paren_id = pit->second;
-    if (arc.ilabel == parens_[paren_id].first)   // open paren
-      TryCompleteAsItem1(item, item_id, paren_id, arc);
-    else                            // close paren
-      TryCompleteAsItem2(item, item_id, paren_id, arc);
-  }
+  else if (open_paren == arc.ilabel)    // open paren
+    TryCompleteAsItem1(item, item_id, open_paren, arc);
+  else                                  // close paren
+    TryCompleteAsItem2(item, item_id, open_paren, arc);
 }
 
 template <class Arc> inline
@@ -478,25 +433,19 @@ void PdtNShortestPath<Arc>::Complete(const Item &item1, ItemId item1_id, const A
 // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
 template <class Arc>
 void PdtNShortestPath<Arc>::TryCompleteAsItem1(const Item &item1, ItemId item1_id,
-                                               Label paren_id, const Arc &arc1) {
+                                               Label open_paren, const Arc &arc1) {
   StateId open_dest = arc1.nextstate;
-  Label close_label = parens_[paren_id].second;
 
-  for (typename ParenStatesMap::const_iterator close_it = close_paren_.find(paren_id);
-       close_it != close_paren_.end() && close_it->first == paren_id;
-       ++close_it) {
-    StateId close_src = close_it->second;
-    for (AIter arc2_aiter(*ifst_, close_src); !arc2_aiter.Done();
-         arc2_aiter.Next()) {
-      const Arc &arc2 = arc2_aiter.Value();
-      if (arc2.ilabel == close_label) {
-        for (ItemIterator item2_iter(theorems_, open_dest, close_src);
-             !item2_iter.Done(); item2_iter.Next()) {
-          ItemId item2_id = item2_iter.Value();
-          const Item &item2 = theorems_.GetItem(item2_id);
-          Complete(item1, item1_id, arc1, item2, item2_id, arc2);
-        }
-      }
+  for (typename PdtParenData<Arc>::Iterator close_it = pdata_.FindClose(open_paren, open_dest);
+       !close_it.Done(); close_it.Next()) {
+    const typename PdtParenData<Arc>::FullArc &fa = close_it.Value();
+    StateId close_src = fa.state;
+    const Arc &arc2 = fa.arc;
+    for (ItemIterator item2_iter(theorems_, open_dest, close_src);
+         !item2_iter.Done(); item2_iter.Next()) {
+      ItemId item2_id = item2_iter.Value();
+      const Item &item2 = theorems_.GetItem(item2_id);
+      Complete(item1, item1_id, arc1, item2, item2_id, arc2);
     }
   }
 }
@@ -504,28 +453,24 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem1(const Item &item1, ItemId item1_i
 // Rule (C) as ?, ??, it, arc |- (?.start, arc.nextstate)
 template <class Arc>
 void PdtNShortestPath<Arc>::TryCompleteAsItem2(const Item &item2, ItemId item2_id,
-                                               Label paren_id, const Arc &arc2) {
-  StateId open_dest = item2.start;
-  Label open_label = parens_[paren_id].first;
+                                               Label open_paren, const Arc &arc2) {
+  StateId close_src = item2.state;
 
-  for (typename ParenStatesMap::const_iterator open_it = open_paren_.find(paren_id);
-       open_it != open_paren_.end() && open_it->first == paren_id;
-       ++open_it) {
-    StateId open_src = open_it->second;
-    for (AIter arc1_iter(*ifst_, open_src); !arc1_iter.Done();
-         arc1_iter.Next()) {
-      const Arc &arc1 = arc1_iter.Value();
-      if (arc1.ilabel == open_label && arc1.nextstate == open_dest) {
-        for (ItemIterator item1_iter(theorems_, open_src);
-             !item1_iter.Done(); item1_iter.Next()) {
-          ItemId item1_id = item1_iter.Value();
-          const Item &item1 = theorems_.GetItem(item1_id);
-          Complete(item1, item1_id, arc1, item2, item2_id, arc2);
-        }
-      }
+  for (typename PdtParenData<Arc>::Iterator open_it = pdata_.FindOpen(open_paren, close_src);
+       !open_it.Done(); open_it.Next()) {
+    const typename PdtParenData<Arc>::FullArc &fa = open_it.Value();
+    StateId open_src = fa.state;
+    const Arc &arc1 = fa.arc;
+    for (ItemIterator item1_iter(theorems_, open_src);
+         !item1_iter.Done(); item1_iter.Next()) {
+      ItemId item1_id = item1_iter.Value();
+      const Item &item1 = theorems_.GetItem(item1_id);
+      Complete(item1, item1_id, arc1, item2, item2_id, arc2);
     }
   }
 }
+
+} // namespace pdt
 
 template <class Arc>
 size_t NShortestPath(const Fst<Arc> &ifst,
@@ -533,7 +478,7 @@ size_t NShortestPath(const Fst<Arc> &ifst,
                      typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      const PdtNShortestPathOptions &opts) {
-  PdtNShortestPath<Arc> pnsp(ifst, parens, opts);
+  pdt::PdtNShortestPath<Arc> pnsp(ifst, parens, opts);
   return pnsp.NShortestPath(ofst);
 }
 
@@ -545,7 +490,6 @@ size_t NShortestPath(const Fst<Arc> &ifst,
                      size_t n) {
   return NShortestPath(ifst, parens, ofst, PdtNShortestPathOptions(n));
 }
-
 } // namespace fst
 
 #endif  // FST_EXTENSIONS_PDT_N_SHORTEST_PATH_H__
