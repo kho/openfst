@@ -124,6 +124,10 @@ class InsideChart {
     weights_[id] = weight;
   }
 
+  size_t Size() const {
+    return weights_.size();
+  }
+
  private:
   typedef unordered_map<StateId, ItemId> StartMap;
   typedef unordered_map<StateId, StartMap> StateStartMap;
@@ -197,10 +201,14 @@ class InsideAlgo {
     Queue q;
     queue_ = &q;
 
-    EnqueueAxioms();
+    n_enqueued_ = 0;
+
+    // EnqueueAxioms();
+    Relax(ifst_->Start(), ifst_->Start(), Weight::One());
 
     while (!q.Empty()) {
       Span<Arc> sp = Dequeue();
+      // VLOG(0) << "D: " << sp.start << "~>" << sp.state;
       if (sp.state == kSuperfinal) // no out-going arcs; no need to expand
         continue;
       // The item is guanranteed to be in chart since an enqueued item
@@ -220,6 +228,9 @@ class InsideAlgo {
     // At this point all reachable paren pairs have been visited thus
     // reported.
     pdata_->ClearNaive();
+
+    VLOG(0) << "Inside: enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << chart_->Size();
+    VLOG(0) << "Inside: score: " << chart_->InsideWeight(ifst_->Start(), kSuperfinal);
 
     chart_ = NULL;
     queue_ = NULL;
@@ -244,6 +255,8 @@ class InsideAlgo {
   InsideChart<Arc> *chart_;
   Queue *queue_;
   unordered_set<Span<Arc> > enqueued_;
+
+  size_t n_enqueued_;
 };
 
 template <class Arc, class Queue>
@@ -261,18 +274,21 @@ void InsideAlgo<Arc, Queue>::EnqueueAxioms() {
   }
   for (typename StateSet::const_iterator i = axioms.begin(); i != axioms.end(); ++i)
     Relax(*i, *i, Weight::One());
+  VLOG(0) << axioms.size() << " axioms";
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
                                      ItemId item, const Arc &arc) {
   Label open_paren = pdata_->OpenParenId(arc.ilabel);
-  if (open_paren == kNoLabel)           // lexical arc
+  if (open_paren == kNoLabel) {         // lexical arc
     Scan(start, state, item, arc);
-  else if (open_paren == arc.ilabel)    // open paren
+  } else if (open_paren == arc.ilabel) { // open paren
+    Relax(arc.nextstate, arc.nextstate, Weight::One());
     TryCompleteAsItem1(start, state, item, open_paren, arc);
-  else                                  // close paren
+  } else {                              // close paren
     TryCompleteAsItem2(start, state, item, open_paren, arc);
+  }
 }
 
 template <class Arc, class Queue> inline
@@ -283,7 +299,12 @@ void InsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
   } else {
     queue_->Enqueue(sp);
     enqueued_.insert(sp);
+    ++n_enqueued_;
+    // VLOG(0) << "E: " << sp.start << "~>" << sp.state;
   }
+
+  if (n_enqueued_ % 10000 == 0)
+    VLOG(0) << "enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << chart_->Size();
 }
 
 template <class Arc, class Queue> inline
@@ -302,18 +323,24 @@ void InsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight weight) 
   if (weight != chart_weight) {
     chart_->SetInsideWeight(item, weight);
     Enqueue(start, state);
+    // VLOG(0) << "Relax " << start << "~>" << state << ": " << chart_weight << " -> " << weight;
   }
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::Scan(StateId start, StateId state,
                                   ItemId item, const Arc &arc) {
+  // VLOG(0) << "Scan " << start << "~>" << state << " + " << arc.nextstate << ":" << arc.ilabel;
   Relax(start, arc.nextstate, Times(chart_->InsideWeight(item), arc.weight));
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId item1, const Arc &arc1,
                                       StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
+  // VLOG(0) << "Complete " << start1 << "~>" << state1 << " + "
+  //         << arc1.nextstate << ":" << arc1.ilabel << " + "
+  //         << start2 << "~>" << state2 << " + "
+  //         << arc2.nextstate << ":" << arc2.ilabel;
   Relax(start1, arc2.nextstate,
         Times(chart_->InsideWeight(item1),
               Times(arc1.weight,
@@ -333,7 +360,7 @@ void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, 
     ItemId item2 = chart_->Find(open_dest, close_src);
     if (item2 != kNoItemId) {
       pdata_->ReportUseful(open_src, arc1, close_src, arc2);
-      Complete(start1, state1, item1, arc2, open_dest, close_src, item2, arc2);
+      Complete(start1, state1, item1, arc1, open_dest, close_src, item2, arc2);
     }
   }
 }
@@ -346,6 +373,10 @@ void InsideAlgo<Arc, Queue>::TryCompleteAsItem2(StateId start2, StateId state2, 
   for (typename PdtParenData<Arc>::Iterator open_it = pdata_->FindOpen(open_paren, close_src);
        !open_it.Done(); open_it.Next()) {
     const typename PdtParenData<Arc>::FullArc &fa = open_it.Value();
+
+    if (fa.arc.nextstate != start2)
+      continue;
+
     StateId open_src = fa.state;
     const Arc &arc1 = fa.arc;
     bool useful = false;
