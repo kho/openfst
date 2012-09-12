@@ -6,8 +6,9 @@
 // Functions to compute outside weights of a PDT.
 
 // For two states p and q, where p is either a start state or has an
-// incoming open paren arc, we can define the inside and outside
-// weights similar to those in parsing in the following way:
+// incoming open paren arc (call p an axiom state), we can define the
+// inside and outside weights similar to those in parsing in the
+// following way:
 
 // The inside weight of (p, q) is the shortest distance from p to q
 // via any balanced path.
@@ -22,7 +23,8 @@
 
 // For states that are not the start state or does not have an
 // open-paren incoming arc, these weights are assumed to be
-// Weight::Zero().
+// Weight::Zero(). Furthermore, for axiom states that can not be
+// reached, we do not care about their inside or outside weights.
 
 #ifndef FST_EXTENSIONS_PDT_INSIDE_OUTSIDE_H__
 #define FST_EXTENSIONS_PDT_INSIDE_OUTSIDE_H__
@@ -67,13 +69,18 @@ struct hash<fst::pdt::Span<Arc> > {
 
 namespace fst {
 namespace pdt {
-// id to chart items
+// Id to chart items
 typedef int ItemId;
 const ItemId kNoItemId = -1;
+
+// A hallucinated "final" state to which every real final state
+// points; then the final state weight can be represented as an arc,
+// which simplifies the following algorithms. Also used in finding n
+// shortest paths.
 const int kSuperfinal = -2;
 
 //
-// Inside
+// Inside chart and inside algorithm
 //
 
 template <class Arc>
@@ -167,7 +174,7 @@ class InsideChart {
 };
 
 
-template <class Arc, class Queue=FifoQueue<Span<Arc> > >
+template <class Arc, class Queue=FifoQueue<typename Arc::StateId> >
 class InsideAlgo {
  public:
   typedef typename Arc::Label Label;
@@ -175,15 +182,13 @@ class InsideAlgo {
   typedef typename Arc::Weight Weight;
 
   InsideAlgo(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens,
-            PdtParenData<Arc> *pdata = NULL) :
+             PdtParenData<Arc> *pdata = NULL) :
       ifst_(ifst.Copy()),
-      pdata_(pdata), my_pdata_(ifst, parens),
+      pdata_(pdata), my_pdata_(parens),
       chart_(NULL), queue_(NULL) {
     // If paren data is not given, use my own.
-    if (pdata_ == NULL) {
+    if (pdata_ == NULL)
       pdata_ = &my_pdata_;
-      pdata_->Init();
-    }
   }
 
   ~InsideAlgo() {
@@ -193,61 +198,42 @@ class InsideAlgo {
   void FillChart(InsideChart<Arc> *chart) {
     chart_ = chart;
     chart_->Clear();
+    n_enqueued_ = 0;
 
-    // Other functions can assume the fst has at least one state.
+    // Other functions can assume the FST has at least one reachable
+    // state.
     if (ifst_->Start() == kNoStateId)
       return;
 
-    Queue q;
-    queue_ = &q;
+    pdata_->Prepare(*ifst_);
 
-    n_enqueued_ = 0;
-
-    // EnqueueAxioms();
-    Relax(ifst_->Start(), ifst_->Start(), Weight::One());
-
-    while (!q.Empty()) {
-      Span<Arc> sp = Dequeue();
-      // VLOG(0) << "D: " << sp.start << "~>" << sp.state;
-      if (sp.state == kSuperfinal) // no out-going arcs; no need to expand
-        continue;
-      // The item is guanranteed to be in chart since an enqueued item
-      // is either an axiom (see EnqueueAxioms()) or enqueued in
-      // Relax().
-      ItemId item = chart_->Find(sp.start, sp.state);
-      Weight rho = ifst_->Final(sp.state);
-      // If `sp.state' is a final state, hallucinate a pseudo-arc to
-      // the superfinal.
-      if (rho != Weight::Zero())
-        ProcArc(sp.start, sp.state, item, Arc(0, 0, rho, kSuperfinal));
-      // Expand real out-going arcs
-      for (ArcIterator<Fst<Arc> > aiter(*ifst_, sp.state); !aiter.Done(); aiter.Next())
-        ProcArc(sp.start, sp.state, item, aiter.Value());
-    }
+    GetDistance(ifst_->Start());
 
     // At this point all reachable paren pairs have been visited thus
     // reported.
-    pdata_->ClearNaive();
+    pdata_->Finalize();
 
-    VLOG(0) << "Inside: enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << chart_->Size();
-    VLOG(0) << "Inside: score: " << chart_->InsideWeight(ifst_->Start(), kSuperfinal);
+    VLOG(0) << "Inside: enqueued: " << n_enqueued_
+            << " in queue: " << enqueued_.size()
+            << " chart: " << chart_->Size()
+            << " score: " << chart_->InsideWeight(ifst_->Start(), kSuperfinal);
 
     chart_ = NULL;
-    queue_ = NULL;
   }
 
  private:
-  void EnqueueAxioms();
+  void GetDistance(StateId);
+
   void ProcArc(StateId, StateId, ItemId, const Arc &);
 
   void Relax(StateId, StateId, Weight);
   void Enqueue(StateId, StateId);
-  Span<Arc> Dequeue();
+  StateId Dequeue(StateId);
 
   void Scan(StateId, StateId, ItemId, const Arc &);
   void Complete(StateId, StateId, ItemId, const Arc &, StateId, StateId, ItemId, const Arc &);
   void TryCompleteAsItem1(StateId, StateId, ItemId, Label, const Arc &);
-  void TryCompleteAsItem2(StateId, StateId, ItemId, Label, const Arc &);
+  // void TryCompleteAsItem2(StateId, StateId, ItemId, Label, const Arc &);
 
   const Fst<Arc> *ifst_;
   // my_pdata_ is not used if pdata_ is given at initialization
@@ -255,39 +241,56 @@ class InsideAlgo {
   InsideChart<Arc> *chart_;
   Queue *queue_;
   unordered_set<Span<Arc> > enqueued_;
+  unordered_set<StateId> got_distance_;
 
   size_t n_enqueued_;
 };
 
-template <class Arc, class Queue>
-void InsideAlgo<Arc, Queue>::EnqueueAxioms() {
-  typedef unordered_set<StateId> StateSet;
-  StateSet axioms;
-  axioms.insert(ifst_->Start());
-  for (StateIterator<Fst<Arc> > siter(*ifst_); !siter.Done(); siter.Next()) {
-    for (ArcIterator<Fst<Arc> > aiter(*ifst_, siter.Value()); !aiter.Done(); aiter.Next()) {
-      const Arc &arc = aiter.Value();
-      Label open_label = pdata_->OpenParenId(arc.ilabel);
-      if (open_label == arc.ilabel) // open paren
-        axioms.insert(arc.nextstate);
+template <class Arc, class Queue> inline
+void InsideAlgo<Arc, Queue>::GetDistance(StateId start) {
+  if (got_distance_.count(start))
+    return;
+
+  // VLOG(0) << "GetDistance " << start;
+
+  Queue q, *old_queue;
+  old_queue = queue_;
+  queue_ = &q;
+
+  Relax(start, start, Weight::One());
+
+  while (!queue_->Empty()) {
+    StateId state = Dequeue(start);
+    if (state != kSuperfinal) {
+      ItemId item = chart_->Find(start, state);
+      Weight rho = ifst_->Final(state);
+      // VLOG(0) << "State " << state << " Rho " << rho;
+      if (rho != Weight::Zero())
+        ProcArc(start, state, item, Arc(0, 0, rho, kSuperfinal));
+      for (ArcIterator<Fst<Arc > > aiter(*ifst_, state);
+           !aiter.Done(); aiter.Next())
+        ProcArc(start, state, item, aiter.Value());
     }
   }
-  for (typename StateSet::const_iterator i = axioms.begin(); i != axioms.end(); ++i)
-    Relax(*i, *i, Weight::One());
-  VLOG(0) << axioms.size() << " axioms";
+
+  queue_ = old_queue;
+  got_distance_.insert(start);
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
                                      ItemId item, const Arc &arc) {
+  // VLOG(0) << "ProcArc " << start << "~>" << state << " " << arc.nextstate;
   Label open_paren = pdata_->OpenParenId(arc.ilabel);
-  if (open_paren == kNoLabel) {         // lexical arc
+  if (open_paren == kNoLabel) {     // lexical arc
     Scan(start, state, item, arc);
   } else if (open_paren == arc.ilabel) { // open paren
-    Relax(arc.nextstate, arc.nextstate, Weight::One());
+    GetDistance(arc.nextstate);
+    // At this point all relevant closing paren is known to pdata_ and
+    // all inside items from arc.nextstate is proved
     TryCompleteAsItem1(start, state, item, open_paren, arc);
-  } else {                              // close paren
-    TryCompleteAsItem2(start, state, item, open_paren, arc);
+  } else {               // close paren
+    pdata_->ReportCloseParen(start, state, arc);
   }
 }
 
@@ -295,12 +298,12 @@ template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
   Span<Arc> sp(start, state);
   if (enqueued_.count(sp)) {
-    queue_->Update(sp);
+    queue_->Update(state);
   } else {
-    queue_->Enqueue(sp);
+    queue_->Enqueue(state);
     enqueued_.insert(sp);
     ++n_enqueued_;
-    // VLOG(0) << "E: " << sp.start << "~>" << sp.state;
+    // VLOG(0) << "Enqueue " << start << "~>" << state;
   }
 
   if (n_enqueued_ % 10000 == 0)
@@ -308,11 +311,12 @@ void InsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
 }
 
 template <class Arc, class Queue> inline
-Span<Arc> InsideAlgo<Arc, Queue>::Dequeue() {
-  Span<Arc> sp = queue_->Head();
+typename Arc::StateId InsideAlgo<Arc, Queue>::Dequeue(StateId start) {
+  StateId state = queue_->Head();
   queue_->Dequeue();
-  enqueued_.erase(sp);
-  return sp;
+  enqueued_.erase(Span<Arc>(start, state));
+  // VLOG(0) << "Dequeue " << start << "~>" << state;
+  return state;
 }
 
 template <class Arc, class Queue> inline
@@ -323,24 +327,23 @@ void InsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight weight) 
   if (weight != chart_weight) {
     chart_->SetInsideWeight(item, weight);
     Enqueue(start, state);
-    // VLOG(0) << "Relax " << start << "~>" << state << ": " << chart_weight << " -> " << weight;
   }
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::Scan(StateId start, StateId state,
                                   ItemId item, const Arc &arc) {
-  // VLOG(0) << "Scan " << start << "~>" << state << " + " << arc.nextstate << ":" << arc.ilabel;
+  // VLOG(0) << "Scan " << start << "~>" << state << " " << arc.nextstate;
   Relax(start, arc.nextstate, Times(chart_->InsideWeight(item), arc.weight));
 }
 
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId item1, const Arc &arc1,
                                       StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
-  // VLOG(0) << "Complete " << start1 << "~>" << state1 << " + "
-  //         << arc1.nextstate << ":" << arc1.ilabel << " + "
-  //         << start2 << "~>" << state2 << " + "
-  //         << arc2.nextstate << ":" << arc2.ilabel;
+  // VLOG(0) << "Complete " << start1 << "~>" << state1
+  //         << " " << arc1.nextstate
+  //         << " " << start2 << "~>" << state2
+  //         << " " << arc2.nextstate;
   Relax(start1, arc2.nextstate,
         Times(chart_->InsideWeight(item1),
               Times(arc1.weight,
@@ -351,49 +354,47 @@ void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId ite
 template <class Arc, class Queue> inline
 void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, ItemId item1,
                                                 Label open_paren, const Arc &arc1) {
-  StateId open_src = state1, open_dest = arc1.nextstate;
+  // VLOG(0) << "TryCompleteAsItem1 " << start1 << "~>" << state1 << " " << arc1.nextstate;
+  StateId open_dest = arc1.nextstate;
   for (typename PdtParenData<Arc>::Iterator close_it = pdata_->FindClose(open_paren, open_dest);
        !close_it.Done(); close_it.Next()) {
-    const typename PdtParenData<Arc>::FullArc &fa = close_it.Value();
+    const FullArc<Arc> &fa = close_it.Value();
     StateId close_src = fa.state;
     const Arc &arc2 = fa.arc;
     ItemId item2 = chart_->Find(open_dest, close_src);
-    if (item2 != kNoItemId) {
-      pdata_->ReportUseful(open_src, arc1, close_src, arc2);
-      Complete(start1, state1, item1, arc1, open_dest, close_src, item2, arc2);
-    }
+    Complete(start1, state1, item1, arc1, open_dest, close_src, item2, arc2);
   }
 }
 
-// Rule (C) as ?, ??, it, arc |- (?.start, arc.nextstate)
-template <class Arc, class Queue> inline
-void InsideAlgo<Arc, Queue>::TryCompleteAsItem2(StateId start2, StateId state2, ItemId item2,
-                                                Label open_paren, const Arc &arc2) {
-  StateId close_src = state2;
-  for (typename PdtParenData<Arc>::Iterator open_it = pdata_->FindOpen(open_paren, close_src);
-       !open_it.Done(); open_it.Next()) {
-    const typename PdtParenData<Arc>::FullArc &fa = open_it.Value();
+// // Rule (C) as ?, ??, it, arc |- (?.start, arc.nextstate)
+// template <class Arc, class Queue> inline
+// void InsideAlgo<Arc, Queue>::TryCompleteAsItem2(StateId start2, StateId state2, ItemId item2,
+//                         Label open_paren, const Arc &arc2) {
+//  StateId close_src = state2;
+//  for (typename PdtParenData<Arc>::Iterator open_it = pdata_->FindOpen(open_paren, close_src);
+//    !open_it.Done(); open_it.Next()) {
+//   const typename PdtParenData<Arc>::FullArc<Arc> &fa = open_it.Value();
 
-    if (fa.arc.nextstate != start2)
-      continue;
+//   if (fa.arc.nextstate != start2)
+//    continue;
 
-    StateId open_src = fa.state;
-    const Arc &arc1 = fa.arc;
-    bool useful = false;
+//   StateId open_src = fa.state;
+//   const Arc &arc1 = fa.arc;
+//   bool useful = false;
 
-    for (typename InsideChart<Arc>::StartIterator start_it(*chart_, open_src);
-         !start_it.Done(); start_it.Next()) {
-      useful = true;
-      const pair<StateId, ItemId> &p = start_it.Value();
-      StateId start1 = p.first;
-      ItemId item1 = p.second;
-      Complete(start1, open_src, item1, arc1, start2, state2, item2, arc2);
-    }
+//   for (typename InsideChart<Arc>::StartIterator start_it(*chart_, open_src);
+//     !start_it.Done(); start_it.Next()) {
+//    useful = true;
+//    const pair<StateId, ItemId> &p = start_it.Value();
+//    StateId start1 = p.first;
+//    ItemId item1 = p.second;
+//    Complete(start1, open_src, item1, arc1, start2, state2, item2, arc2);
+//   }
 
-    if (useful)
-      pdata_->ReportUseful(open_src, arc1, close_src, arc2);
-  }
-}
+//   if (useful)
+//    pdata_->ReportUseful(open_src, arc1, close_src, arc2);
+//  }
+// }
 
 //
 // Outside
@@ -461,12 +462,10 @@ class OutsideAlgo {
   OutsideAlgo(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens,
               PdtParenData<Arc> *pdata = NULL) :
       ifst_(ifst.Copy()), parens_(parens),
-      pdata_(pdata), my_pdata_(ifst, parens),
+      pdata_(pdata), my_pdata_(parens),
       out_chart_(NULL), in_chart_(NULL), queue_(NULL) {
-    if (pdata_ == NULL) {
+    if (pdata_ == NULL)
       pdata_ = &my_pdata_;
-      pdata_->Init();
-    }
   }
 
   ~OutsideAlgo() {
@@ -500,7 +499,7 @@ class OutsideAlgo {
       ItemId item = out_chart_->Find(sp.start, sp.state);
       for (typename ArcIndex::const_iterator it = arcs_.find(sp.state);
            it != arcs_.end() && it->first == sp.state; ++it) {
-        const FullArc &fa = it->second;
+        const FullArc<Arc> &fa = it->second;
         ProcArc(sp.start, sp.state, item, fa);
       }
     }
@@ -511,16 +510,15 @@ class OutsideAlgo {
   }
 
  private:
-  typedef typename PdtParenData<Arc>::FullArc FullArc;
-  typedef unordered_multimap<StateId, FullArc> ArcIndex;
+  typedef unordered_multimap<StateId, FullArc<Arc> > ArcIndex;
 
   void BuildReverseArcIndex();
   void EnqueueAxioms();
-  void ProcArc(StateId, StateId, ItemId, const FullArc &);
+  void ProcArc(StateId, StateId, ItemId, const FullArc<Arc> &);
 
   void Relax(StateId, StateId, Weight, Weight);
-  void Back(StateId, StateId, ItemId, const FullArc &);
-  void Down(StateId, StateId, ItemId, const FullArc &, Label);
+  void Back(StateId, StateId, ItemId, const FullArc<Arc> &);
+  void Down(StateId, StateId, ItemId, const FullArc<Arc> &, Label);
 
   void Enqueue(StateId, StateId);
   Span<Arc> Dequeue();
@@ -542,10 +540,10 @@ void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
     Weight rho = ifst_->Final(s);
     // Hallucinate the pseudo-arc
     if (rho != Weight::Zero())
-      arcs_.insert(make_pair(kSuperfinal, FullArc(s, Arc(0, 0, rho, kSuperfinal))));
+      arcs_.insert(make_pair(kSuperfinal, FullArc<Arc> (s, Arc(0, 0, rho, kSuperfinal))));
     for (ArcIterator<Fst<Arc> > aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
       const Arc &arc = aiter.Value();
-      arcs_.insert(make_pair(arc.nextstate, FullArc(s, arc)));
+      arcs_.insert(make_pair(arc.nextstate, FullArc<Arc> (s, arc)));
     }
   }
 }
@@ -556,7 +554,7 @@ void OutsideAlgo<Arc, Queue>::EnqueueAxioms() {
 }
 
 template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item, const FullArc &fa) {
+void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
   Label open_paren = pdata_->OpenParenId(fa.arc.ilabel);
   if (open_paren == kNoLabel)
     Back(start, state, item, fa);
@@ -577,7 +575,7 @@ void OutsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight left, W
 }
 
 template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, const FullArc &fa) {
+void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
   StateId q1 = start, q2 = fa.state;
   ItemId id = in_chart_->Find(q1, q2);
   const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
@@ -588,13 +586,13 @@ void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, co
 }
 
 template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId item, const FullArc &close_fa, Label open_paren) {
+void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId item, const FullArc<Arc> &close_fa, Label open_paren) {
   StateId q1 = start, q4 = close_fa.state;
   const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
 
   for (typename PdtParenData<Arc>::Iterator it = pdata_->FindOpen(open_paren, q4);
        !it.Done(); it.Next()) {
-    const FullArc &open_fa = it.Value();
+    const FullArc<Arc> &open_fa = it.Value();
     StateId q2 = open_fa.state, q3 = open_fa.arc.nextstate;
     ItemId id1 = in_chart_->Find(q1, q2),
         id2 = in_chart_->Find(q3, q4);

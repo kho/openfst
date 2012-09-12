@@ -212,14 +212,13 @@ class PdtNShortestPath {
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), ofst_(NULL), parens_(parens),
       opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL),
-      pdata_(ifst, parens) {
+      pdata_(parens) {
     if ((Weight::Properties() & (kPath | kRightSemiring | kLeftSemiring)) !=
         (kPath | kRightSemiring | kLeftSemiring)) {
       FSTERROR() << "PdtNShortestPath: Weight needs to have the path"
                  << " property and be right distributive: " << Weight::Type();
       error_ = true;
     }
-    pdata_.Init();
   }
 
   ~PdtNShortestPath() {
@@ -307,7 +306,6 @@ void PdtNShortestPath<Arc>::ClearFst(MutableFst<Arc> *ofst) {
 template <class Arc> inline
 void PdtNShortestPath<Arc>::PreComputeHeuristics() {
   OutsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&out_chart_);
-  VLOG(0) << "Oustide score done";
 }
 
 // A* search
@@ -440,7 +438,7 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem1(const Item &item1, ItemId item1_i
 
   for (typename PdtParenData<Arc>::Iterator close_it = pdata_.FindClose(open_paren, open_dest);
        !close_it.Done(); close_it.Next()) {
-    const typename PdtParenData<Arc>::FullArc &fa = close_it.Value();
+    const FullArc<Arc> &fa = close_it.Value();
     StateId close_src = fa.state;
     const Arc &arc2 = fa.arc;
     for (ItemIterator item2_iter(theorems_, open_dest, close_src);
@@ -460,7 +458,7 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem2(const Item &item2, ItemId item2_i
 
   for (typename PdtParenData<Arc>::Iterator open_it = pdata_.FindOpen(open_paren, close_src);
        !open_it.Done(); open_it.Next()) {
-    const typename PdtParenData<Arc>::FullArc &fa = open_it.Value();
+    const FullArc<Arc> &fa = open_it.Value();
     StateId open_src = fa.state;
     const Arc &arc1 = fa.arc;
     for (ItemIterator item1_iter(theorems_, open_src);
