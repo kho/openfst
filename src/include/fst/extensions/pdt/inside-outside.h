@@ -31,6 +31,7 @@
 
 #include <fst/extensions/pdt/paren-data.h>
 #include <fst/queue.h>
+#include <fst/heap.h>
 
 #include <tr1/unordered_map>
 using std::tr1::unordered_map;
@@ -135,9 +136,23 @@ class InsideChart {
     return weights_.size();
   }
 
+  size_t TimeStamp(StateId start, StateId state) const {
+    return TimeStamp(Span<Arc>(start, state));
+  }
+
+  size_t TimeStamp(const Span<Arc> &sp) const {
+    typename TimeStampMap::const_iterator it = time_stamps_.find(sp);
+    return it != time_stamps_.end() ? it->second : 0;
+  }
+
+  void SetTimeStamp(StateId start, StateId state, size_t stamp) {
+    time_stamps_[Span<Arc>(start, state)] = stamp;
+  }
+
  private:
   typedef unordered_map<StateId, ItemId> StartMap;
   typedef unordered_map<StateId, StartMap> StateStartMap;
+  typedef unordered_map<Span<Arc>, size_t> TimeStampMap;
 
  public:
   class StartIterator {
@@ -171,6 +186,20 @@ class InsideChart {
  private:
   vector<Weight> weights_;
   StateStartMap groups_;
+  TimeStampMap time_stamps_;
+};
+
+
+template <class Arc>
+struct TimeStampCompare {
+  TimeStampCompare(const InsideChart<Arc> &chart) : chart_(chart) {}
+
+  bool operator() (const Span<Arc> &sp1, const Span<Arc> &sp2) {
+    return chart_.TimeStamp(sp1) <= chart_.TimeStamp(sp2);
+  }
+
+ private:
+  const InsideChart<Arc> &chart_;
 };
 
 
@@ -199,6 +228,7 @@ class InsideAlgo {
     chart_ = chart;
     chart_->Clear();
     n_enqueued_ = 0;
+    n_dequeued_ = 0;
 
     // Other functions can assume the FST has at least one reachable
     // state.
@@ -243,7 +273,7 @@ class InsideAlgo {
   unordered_set<Span<Arc> > enqueued_;
   unordered_set<StateId> got_distance_;
 
-  size_t n_enqueued_;
+  size_t n_enqueued_, n_dequeued_;
 };
 
 template <class Arc, class Queue> inline
@@ -314,6 +344,8 @@ typename Arc::StateId InsideAlgo<Arc, Queue>::Dequeue(StateId start) {
   StateId state = queue_->Head();
   queue_->Dequeue();
   enqueued_.erase(Span<Arc>(start, state));
+  ++n_dequeued_;
+  chart_->SetTimeStamp(start, state, n_dequeued_);
   // VLOG(0) << "Dequeue " << start << "~>" << state;
   return state;
 }
@@ -455,7 +487,7 @@ class OutsideChart {
   SpanMap spans_;
 };
 
-template <class Arc, class Queue=FifoQueue<Span<Arc> > >
+template <class Arc>
 class OutsideAlgo {
  public:
   typedef typename Arc::StateId StateId;
@@ -493,7 +525,8 @@ class OutsideAlgo {
 
     BuildReverseArcIndex();
 
-    Queue q;
+    TimeStampCompare<Arc> comp(*in_chart_);
+    Queue q(comp);
     queue_ = &q;
 
     Relax(ifst_->Start(), kSuperfinal, Weight::One(), Weight::One());
@@ -519,6 +552,7 @@ class OutsideAlgo {
 
  private:
   typedef unordered_multimap<StateId, FullArc<Arc> > ArcIndex;
+  typedef Heap<Span<Arc>, TimeStampCompare<Arc>, true> Queue;
 
   void BuildReverseArcIndex();
 
@@ -542,8 +576,8 @@ class OutsideAlgo {
   size_t n_enqueued_;
 };
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
+template <class Arc> inline
+void OutsideAlgo<Arc>::BuildReverseArcIndex() {
   for (StateIterator<Fst<Arc> > siter(*ifst_); !siter.Done(); siter.Next()) {
     StateId s = siter.Value();
     Weight rho = ifst_->Final(s);
@@ -557,8 +591,8 @@ void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
   }
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
+template <class Arc> inline
+void OutsideAlgo<Arc>::ProcArc(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
   Label open_paren = pdata_->OpenParenId(fa.arc.ilabel);
   if (open_paren == kNoLabel)
     Back(start, state, item, fa);
@@ -566,8 +600,8 @@ void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item,
     Down(start, state, item, fa, open_paren);
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight left, Weight right) {
+template <class Arc> inline
+void OutsideAlgo<Arc>::Relax(StateId start, StateId state, Weight left, Weight right) {
   ItemId item = out_chart_->FindOrAdd(start, state);
   pair<Weight, Weight> chart_weight = out_chart_->OutsideWeight(item);
   Weight old_product = Times(chart_weight.first, chart_weight.second),
@@ -578,8 +612,8 @@ void OutsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight left, W
   }
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
+template <class Arc> inline
+void OutsideAlgo<Arc>::Back(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
   StateId q1 = start, q2 = fa.state;
   ItemId id = in_chart_->Find(q1, q2);
   const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
@@ -589,8 +623,8 @@ void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, co
           Times(fa.arc.weight, outter.second));
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId item, const FullArc<Arc> &close_fa, Label open_paren) {
+template <class Arc> inline
+void OutsideAlgo<Arc>::Down(StateId start, StateId state, ItemId item, const FullArc<Arc> &close_fa, Label open_paren) {
   StateId q1 = start, q4 = close_fa.state;
   const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
 
@@ -616,13 +650,11 @@ void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId item, co
   }
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
+template <class Arc> inline
+void OutsideAlgo<Arc>::Enqueue(StateId start, StateId state) {
   Span<Arc> sp(start, state);
-  if (enqueued_.count(sp)) {
-    queue_->Update(sp);
-  } else {
-    queue_->Enqueue(sp);
+  if (!enqueued_.count(sp)) {
+    queue_->Insert(sp);
     enqueued_.insert(sp);
     ++n_enqueued_;
     if (n_enqueued_ % 100000 == 0)
@@ -630,10 +662,9 @@ void OutsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
   }
 }
 
-template <class Arc, class Queue> inline
-Span<Arc> OutsideAlgo<Arc, Queue>::Dequeue() {
-  Span<Arc> sp = queue_->Head();
-  queue_->Dequeue();
+template <class Arc> inline
+Span<Arc> OutsideAlgo<Arc>::Dequeue() {
+  Span<Arc> sp = queue_->Pop();
   enqueued_.erase(sp);
   return sp;
 }
