@@ -303,11 +303,10 @@ void InsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
     queue_->Enqueue(state);
     enqueued_.insert(sp);
     ++n_enqueued_;
-    // VLOG(0) << "Enqueue " << start << "~>" << state;
+    if (n_enqueued_ % 100000 == 0)
+      VLOG(0) << "enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << chart_->Size();
   }
 
-  if (n_enqueued_ % 10000 == 0)
-    VLOG(0) << "enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << chart_->Size();
 }
 
 template <class Arc, class Queue> inline
@@ -412,6 +411,10 @@ class OutsideChart {
     spans_.clear();
   }
 
+  size_t Size() const {
+    return weights_.size();
+  }
+
   ItemId Find(StateId start, StateId state) const {
     typename SpanMap::const_iterator it = spans_.find(Span<Arc>(start, state));
     if (it == spans_.end())
@@ -475,6 +478,7 @@ class OutsideAlgo {
   void FillChart(OutsideChart<Arc> *out_chart, InsideChart<Arc> *in_chart = NULL) {
     out_chart_ = out_chart;
     out_chart_->Clear();
+    n_enqueued_ = 0;
 
     if (ifst_->Start() == kNoStateId)
       return;
@@ -492,7 +496,7 @@ class OutsideAlgo {
     Queue q;
     queue_ = &q;
 
-    EnqueueAxioms();
+    Relax(ifst_->Start(), kSuperfinal, Weight::One(), Weight::One());
 
     while (!q.Empty()) {
       Span<Arc> sp = Dequeue();
@@ -504,6 +508,10 @@ class OutsideAlgo {
       }
     }
 
+    VLOG(0) << "Outside: enqueued: " << n_enqueued_
+            << " in queue: " << enqueued_.size()
+            << " chart: " << out_chart_->Size();
+
     in_chart_ = NULL;
     out_chart_ = NULL;
     queue_ = NULL;
@@ -513,7 +521,7 @@ class OutsideAlgo {
   typedef unordered_multimap<StateId, FullArc<Arc> > ArcIndex;
 
   void BuildReverseArcIndex();
-  void EnqueueAxioms();
+
   void ProcArc(StateId, StateId, ItemId, const FullArc<Arc> &);
 
   void Relax(StateId, StateId, Weight, Weight);
@@ -531,6 +539,7 @@ class OutsideAlgo {
   Queue *queue_;
   ArcIndex arcs_;
   unordered_set<Span<Arc> > enqueued_;
+  size_t n_enqueued_;
 };
 
 template <class Arc, class Queue> inline
@@ -546,11 +555,6 @@ void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
       arcs_.insert(make_pair(arc.nextstate, FullArc<Arc> (s, arc)));
     }
   }
-}
-
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::EnqueueAxioms() {
-  Relax(ifst_->Start(), kSuperfinal, Weight::One(), Weight::One());
 }
 
 template <class Arc, class Queue> inline
@@ -620,6 +624,9 @@ void OutsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
   } else {
     queue_->Enqueue(sp);
     enqueued_.insert(sp);
+    ++n_enqueued_;
+    if (n_enqueued_ % 100000 == 0)
+      VLOG(0) << "enqueued: " << n_enqueued_ << " in queue: " << enqueued_.size() << " chart: " << out_chart_->Size();
   }
 }
 
