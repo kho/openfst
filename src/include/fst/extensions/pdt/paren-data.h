@@ -35,9 +35,6 @@ struct FullArc {
                              && arc.olabel == that.arc.olabel
                              && arc.weight == that.arc.weight);
   }
-
-  struct Hash {
-  };
 };
 
 } // namespace pdt
@@ -105,7 +102,8 @@ class PdtParenData {
   };
 
   // The constructor only assigns paren ids
-  PdtParenData(const vector<pair<Label, Label> > &parens) {
+  PdtParenData(const vector<pair<Label, Label> > &parens) :
+      finalized_(false) {
     AssignParenId(parens);
   }
 
@@ -125,6 +123,7 @@ class PdtParenData {
 
   // Finds all open paren arcs
   void Prepare(const Fst<Arc> &fst) {
+    if (finalized_) return;
     for (StateIterator<Fst<Arc> > siter(fst); !siter.Done(); siter.Next()) {
       StateId s = siter.Value();
       for (ArcIterator<Fst<Arc> > aiter(fst, s); !aiter.Done(); aiter.Next()) {
@@ -141,6 +140,7 @@ class PdtParenData {
   // Should be called after all close paren arcs have been seen
   void Finalize() {
     open_arcs_.clear();
+    finalized_ = true;
   }
 
   void ReportCloseParen(StateId open_dest, StateId close_src, const Arc &close_arc) {
@@ -153,16 +153,6 @@ class PdtParenData {
       close_map_[ParenState<Arc>(open_paren, open_dest)].insert(close_fa_ptr);
     }
   }
-
-  // // Reports a pair of matching paren arcs. After ClearNaive() these
-  // // will be used to provide more accurate answer to open/close arc
-  // // queries.
-  // void ReportUseful(StateId open_src, const Arc &open_arc,
-  //                   StateId close_src, const Arc &close_arc) {
-  //   Label open_paren = OpenParenId(open_arc.ilabel);
-  //   sure_open_map_[ParenState<Arc>(open_paren, close_src)].insert(FullArc(open_src, open_arc));
-  //   sure_close_map_[ParenState<Arc>(open_paren, open_arc.nextstate)].insert(FullArc(close_src, close_arc));
-  // }
 
   // Returns an Iterator through all open paren arcs reachable to
   // close_src with a matching paren.
@@ -197,6 +187,7 @@ class PdtParenData {
     return &(*full_arcs_.insert(FullArc<Arc>(src, arc)).first);
   }
 
+  bool finalized_;
   unordered_map<Label, Label> open_paren_;
   SureMap open_map_, close_map_;
   OpenArcMap open_arcs_;
