@@ -4,6 +4,7 @@
 #define FST_TEST_PDTNSHORTEST_H__
 
 #include <fst/fstlib.h>
+#include <fst/extensions/pdt/compose.h>
 #include <fst/extensions/pdt/expand.h>
 #include <fst/extensions/pdt/shortest-path.h>
 #include <fst/extensions/pdt/n-shortest-path.h>
@@ -12,6 +13,8 @@
 using std::clock_t;
 #include <iostream>
 using std::ostream;
+#include <set>
+using std::set;
 #include <sstream>
 #include <string>
 using std::string;
@@ -55,25 +58,37 @@ class PdtNShortestPathTester {
 
   void Test(const Fst<Arc> &fst, const Parens &parens) {
     TestSingleShortest(fst, parens);
-    TestNShortest(fst, parens, 100);
+    TestNShortest(fst, parens, 1000);
   }
 
   void Time(const Fst<Arc> &fst, const Parens &parens) {
     if (!watch_)
       FSTERROR() << "PdtNShortestPathTester: no stop watch";
-    TimeVariousN(fst, parens, 10, 10, 1000 + 1);
-    TimeSingleShortest(fst, parens);
-    TimeNShortest(fst, parens, 200);
+    // TimeVariousN(fst, parens, 10, 10, 1000 + 1);
+    // TimeSingleShortest(fst, parens);
+    TimeNShortest(fst, parens, 1000);
   }
 
  private:
+  struct PathComp {
+    bool operator()(const pair<vector<Label>, Weight> &x,
+                    const pair<vector<Label>, Weight> &y) {
+      if (x.second != y.second) {
+        Weight a = Plus(x.second, y.second);
+        return a == x.second;
+      } else {
+        return x.first <= y.first;
+      }
+    }
+  };
+
   void TestSingleShortest(const Fst<Arc> &fst, const Parens &parens) {
     VectorFst<Arc> ofst1, ofst2;
     ShortestPath(fst, parens, &ofst1);
     if (verbose_) VLOG(0) << "TestSingleShortest: " << "ShortestPath finished";
     NShortestPath(fst, parens, &ofst2, 1);
     if (verbose_) VLOG(0) << "TestSingleShortest: " << "NShortestPath finished";
-    CHECK(EquivPaths(ofst1, ofst2));
+    CHECK(EquivPaths(fst, parens, ofst1, ofst2));
     if (verbose_)
       VLOG(0) << "TestSingleShortest: " << "pass";
   }
@@ -84,7 +99,7 @@ class PdtNShortestPathTester {
     if (verbose_) VLOG(0) << "TestNShortest: " << "NShortestPath finished";
     NShortestPathViaExpand(fst, parens, &ofst1, n);
     if (verbose_) VLOG(0) << "TestNShortest: " << "NShortestPathViaExpand finished";
-    CHECK(EquivPaths(ofst1, ofst2));
+    CHECK(EquivPaths(fst, parens, ofst1, ofst2));
     if (verbose_)
       VLOG(0) << "TestNShortest: " << "pass";
   }
@@ -120,10 +135,10 @@ class PdtNShortestPathTester {
     VectorFst<Arc> ofst1, ofst2;
     string comment1("NShortestPathViaExpand"), comment2("NShortestPath");
 
-    watch_->Reset();
-    NShortestPathViaExpand(fst, parens, &ofst1, n);
-    watch_->Lap(comment1);
-    watch_->Report(std::cout);
+    // watch_->Reset();
+    // NShortestPathViaExpand(fst, parens, &ofst1, n);
+    // watch_->Lap(comment1);
+    // watch_->Report(std::cout);
 
     watch_->Reset();
     NShortestPath(fst, parens, &ofst2, n);
@@ -138,6 +153,10 @@ class PdtNShortestPathTester {
   }
 
   void GetPaths(const Fst<Arc> &fst, vector<pair<vector<Label>, Weight> > *output) {
+    output->clear();
+
+    if (fst.Start() == kNoStateId) return;
+
     for (ArcIterator<Fst<Arc> > aiter(fst, fst.Start()); !aiter.Done(); aiter.Next()) {
       const Arc &init_arc = aiter.Value();
       output->push_back(make_pair(vector<Label>(), Weight::One()));
@@ -162,10 +181,36 @@ class PdtNShortestPathTester {
     }
   }
 
-  bool EquivPaths(const Fst<Arc> &fst1, const Fst<Arc> &fst2, float delta = kDelta) {
+  void UniquePaths(vector<pair<vector<Label>, Weight> > *output) {
+    set<vector<Label> > seen_paths;
+
+    vector<bool> remove(output->size(), false);
+    for (size_t i = 0; i < output->size(); ++i) {
+      if (!seen_paths.insert(output->at(i).first).second)
+        remove[i] = true;
+    }
+    size_t next_pos = 1;
+    for (size_t i = 1; i < output->size(); ++i) {
+      if (!remove[i]) {
+        output->at(next_pos) = output->at(i);
+        ++next_pos;
+      }
+    }
+    output->resize(next_pos);
+  }
+
+  bool EquivPaths(const Fst<Arc> &fst, const Parens &parens,
+                  const Fst<Arc> &fst1, const Fst<Arc> &fst2, float delta = kDelta) {
     vector<pair<vector<Label>, Weight> > paths1, paths2;
+
+    // vector<Label> empty_path;
+    // empty_path.push_back(0);
+    // cout << "Accepting " << AcceptingPath(fst, parens, empty_path) << endl;
+
     GetPaths(fst1, &paths1);
+    UniquePaths(&paths1);
     GetPaths(fst2, &paths2);
+    UniquePaths(&paths2);
 
     if (verbose_) {
       VLOG(0) << "fst1 has " << paths1.size() << " paths";
@@ -173,37 +218,81 @@ class PdtNShortestPathTester {
       VLOG(0) << "precision tolerance: " << delta;
     }
 
-    if (paths1.size() != paths2.size()) {
-      cout << "Different numbers of paths: "
-           << paths1.size() << " vs " << paths2.size() << endl;
-      return false;
-    }
-
     for (typename vector<pair<vector<Label>, Weight> >::size_type i = 0; i < paths1.size(); ++i) {
-      if (paths1[i].first != paths2[i].first) {
-        cout << i << "-th paths differ: " << endl;
+      if (!AcceptingPath(fst, parens, paths1[i].first)) {
+        cout << i << "-th path(1) is not accepted" << endl;
         for (typename vector<Label>::const_iterator it = paths1[i].first.begin();
-             it != paths1[i].first.end(); ++i)
-          cout << " " << *it;
-        cout << endl;
-        for (typename vector<Label>::const_iterator it = paths2[i].first.begin();
-             it != paths2[i].first.end(); ++i)
+             it != paths1[i].first.end(); ++it)
           cout << " " << *it;
         cout << endl;
         return false;
       }
+      if (!AcceptingPath(fst, parens, paths2[i].first)) {
+        cout << i << "-th path(2) is not accepted" << endl;
+        for (typename vector<Label>::const_iterator it = paths2[i].first.begin();
+             it != paths2[i].first.end(); ++it)
+          cout << " " << *it;
+        cout << endl;
+        return false;
+      }
+    }
+
+    bool pass = true;
+    size_t cmp_size = paths1.size() < paths2.size() ? paths1.size() : paths2.size();
+    for (typename vector<pair<vector<Label>, Weight> >::size_type i = 0; i < cmp_size; ++i) {
       if (!ApproxEqual(paths1[i].second, paths2[i].second, delta)) {
         cout << i << "-th paths have different weights: " << endl;
         for (typename vector<Label>::const_iterator it = paths1[i].first.begin();
-             it != paths1[i].first.end(); ++i)
+             it != paths1[i].first.end(); ++it)
           cout << " " << *it;
         cout << endl;
-        cout << paths1[i].second << " vs " << paths2[i].second << endl;
-        return false;
+        for (typename vector<Label>::const_iterator it = paths2[i].first.begin();
+             it != paths2[i].first.end(); ++it)
+          cout << " " << *it;
+        cout << endl;
+        pass = false;
+        break;
       }
     }
 
-    return true;
+    if (!pass) {
+      for (size_t i = 0; i < paths1.size(); ++i) {
+        cout << "PATHS1 " << paths1[i].second;
+        for (typename vector<Label>::const_iterator it = paths1[i].first.begin();
+             it != paths1[i].first.end(); ++it)
+          cout << " " << *it;
+        cout << endl;
+      }
+      for (size_t i = 0; i < paths2.size(); ++i) {
+        cout << "PATHS2 " << paths2[i].second;
+        for (typename vector<Label>::const_iterator it = paths2[i].first.begin();
+             it != paths2[i].first.end(); ++it)
+          cout << " " << *it;
+        cout << endl;
+      }
+    }
+
+    return pass;
+  }
+
+  bool AcceptingPath(const Fst<Arc> &fst, const Parens &parens,
+                     const vector<Label> &path) {
+    VectorFst<Arc> path_fst, comp_fst, out_fst;
+    StateId p, q;
+    q = path_fst.AddState();
+    path_fst.SetStart(q);
+    for (typename vector<Label>::const_iterator it = path.begin();
+         it != path.end(); ++it) {
+      p = q;
+      q = path_fst.AddState();
+      path_fst.AddArc(p, Arc(*it, *it, Weight::One(), q));
+    }
+    path_fst.SetFinal(q, Weight::One());
+    Compose(path_fst, fst, parens, &comp_fst);
+    ShortestPath(comp_fst, parens, &out_fst);
+    vector<pair<vector<Label>, Weight> > paths;
+    GetPaths(out_fst, &paths);
+    return paths.size() != 0;
   }
 
   StopWatch *watch_;

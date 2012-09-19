@@ -1,6 +1,8 @@
 #include "pdtnshortest.h"
 
 #include <fst/fstlib.h>
+#include <fst/extensions/pdt/paren-data.h>
+#include <fst/extensions/pdt/inside-outside.h>
 #include <fst/extensions/pdt/n-shortest-path.h>
 #include <fst/extensions/pdt/shortest-path.h>
 
@@ -58,6 +60,7 @@ void StopWatch::Report(ostream &output) {
 } // namespace fst
 
 using namespace fst;
+using namespace fst::pdt;
 
 typedef StdArc::Label Label;
 typedef StdArc::StateId StateId;
@@ -70,63 +73,72 @@ StdArc A(Label l, Weight w, StateId dest) {
 vector<pair<Label, Label> > PARENS;
 
 void Init() {
+  PARENS.push_back(make_pair(1, 2));
+  PARENS.push_back(make_pair(3, 4));
   PARENS.push_back(make_pair(5, 6));
   PARENS.push_back(make_pair(7, 8));
 }
 
-VectorFst<StdArc> *SimpleAcyclic() {
+VectorFst<StdArc> *SimpleCyclic() {
   VectorFst<StdArc> m;
-  StateId q[8];
+  StateId q[10];
 
-  for (int i = 0; i < 8; ++i)
+  for (int i = 0; i < 10; ++i)
     q[i] = m.AddState();
 
   m.SetStart(q[0]);
-  m.SetFinal(q[7], Weight::One());
 
-  m.AddArc(q[0], A(1, -1, q[1]));
-  m.AddArc(q[0], A(3, 5, q[2]));
-  m.AddArc(q[0], A(4, 2, q[3]));
+  m.AddArc(q[0], A(1, 1, q[1]));
+  m.AddArc(q[0], A(5, 5, q[4]));
 
-  m.AddArc(q[1], A(5, 0, q[3]));
+  m.AddArc(q[1], A(9, 9, q[2]));
 
-  m.AddArc(q[2], A(7, 0, q[3]));
+  m.AddArc(q[2], A(2, 2, q[3]));
+  m.AddArc(q[2], A(8, 8, q[6]));
 
-  m.AddArc(q[3], A(2, 0, q[4]));
+  m.AddArc(q[3], A(3, 3, q[4]));
 
-  m.AddArc(q[4], A(6, 0, q[5]));
-  m.AddArc(q[4], A(8, 0, q[6]));
-  m.AddArc(q[4], A(4, 3, q[7]));
+  m.AddArc(q[4], A(10, 10, q[5]));
 
-  m.AddArc(q[5], A(1, 5, q[7]));
+  m.AddArc(q[5], A(4, 4, q[6]));
+  m.AddArc(q[5], A(6, 6, q[7]));
 
-  m.AddArc(q[6], A(3, 2, q[7]));
+  m.SetFinal(q[6], Weight::One());
+
+  m.AddArc(q[7], A(7, 7, q[1]));
+
+  for (int i = 1; i <= 8; ++i)
+    m.AddArc(q[8], A(i, 1, q[9]));
 
   return m.Copy();
 }
 
-VectorFst<StdArc> *SimpleCyclic() {
-  VectorFst<StdArc> m;
-  StateId q[4];
+namespace std { namespace tr1 {
+template <>
+struct hash<pair<int, int> > {
+  size_t operator()(const pair<int, int> &p) const {
+    return 7853 * p.first ^ p.second;
+  }
+};
+} }
 
-  for (int i = 0; i < 4; ++i)
-    q[i] = m.AddState();
+template <class Arc>
+void InsideOutside(const Fst<Arc> &fst, const vector<pair<typename Arc::Label, typename Arc::Label> > &parens) {
+  StopWatch &watch = *StopWatch::Get(StopWatch::New());
 
-  m.SetStart(q[0]);
-  m.SetFinal(q[1], Weight::One());
-  m.SetFinal(q[3], Weight::One());
+  PdtParenData<Arc> pdata(parens);
 
-  m.AddArc(q[0], A(5, 0, q[1]));
-  m.AddArc(q[0], A(2, 1, q[2]));
+  watch.Lap("pdata");
 
-  m.AddArc(q[1], A(1, 1, q[0]));
-  m.AddArc(q[1], A(1, 1, q[0]));
+  InsideChart<Arc> in_chart;
+  InsideAlgo<Arc>(fst, parens, &pdata).FillChart(&in_chart);
+  watch.Lap("inside");
 
-  m.AddArc(q[2], A(6, 0, q[3]));
+  OutsideChart<Arc> out_chart;
+  OutsideAlgo<Arc>(fst, parens, &pdata).FillChart(&out_chart, &in_chart);
+  watch.Lap("outside");
 
-  m.AddArc(q[3], A(2, 1, q[2]));
-
-  return m.Copy();
+  watch.Report(cerr);
 }
 
 int main(int argc, char *argv[]) {
@@ -135,14 +147,8 @@ int main(int argc, char *argv[]) {
 
   PdtNShortestPathTester<StdArc> tester(StopWatch::New(), true);
 
-  do {
-    // simple test
-    VectorFst<StdArc> fst(*SimpleAcyclic());
-    tester.Test(fst, PARENS);
-  } while (false);
-
-  if (argc == 3) {
-    string fst_in(argv[1]), parens_in(argv[2]);
+  if (argc == 4) {
+    string op(argv[1]), fst_in(argv[2]), parens_in(argv[3]);
     VectorFst<StdArc> fst(*VectorFst<StdArc>::Read(fst_in));
     vector<pair<StdArc::Label, StdArc::Label> > parens;
     ReadLabelPairs(parens_in, &parens);
@@ -150,9 +156,18 @@ int main(int argc, char *argv[]) {
     VLOG(0) << "pdt has " << CountStates(fst) << " states and "
             << parens.size() << " pairs of parens";
 
-    tester.Test(fst, parens);
-
-    tester.Time(fst, parens);
+    if (op == "io")
+      InsideOutside(fst, parens);
+    else if (op == "test")
+      tester.Test(fst, parens);
+    else if (op == "time")
+      tester.Time(fst, parens);
+    else
+      VLOG(0) << "Unknown op: " << op;
+  } else {
+    // simple test
+    VectorFst<StdArc> fst(*SimpleCyclic());
+    tester.Test(fst, PARENS);
   }
 
   StopWatch::Destroy();
