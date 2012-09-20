@@ -51,7 +51,7 @@ struct Span {
   Span(typename Arc::StateId p, typename Arc::StateId q) :
       start(p), state(q) {}
   bool operator==(const Span<Arc> &that) const {
-    return this == &that || (start == that.start && state == that.state);
+    return start == that.start && state == that.state;
   }
 };
 } // namespace pdt
@@ -356,7 +356,7 @@ void InsideAlgo<Arc, Queue>::GetDistance(StateId start) {
 
 template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
-                                            ItemId item, const Arc &arc) {
+                                     ItemId item, const Arc &arc) {
   Label open_paren = pdata_->OpenParenId(arc.ilabel);
   if (open_paren == kNoLabel) {     // lexical arc
     Scan(start, state, item, arc);
@@ -403,7 +403,7 @@ ItemId InsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight weight
 
 template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::Scan(StateId start, StateId state,
-                                         ItemId item, const Arc &arc) {
+                                  ItemId item, const Arc &arc) {
   // VLOG(0) << "Scan " << start << "~>" << state << " " << arc.nextstate;
   ItemId new_item = Relax(start, arc.nextstate, Times(chart_->GetInsideWeight(item), arc.weight));
   chart_->AddParent(new_item, item);
@@ -411,7 +411,7 @@ void InsideAlgo<Arc, Queue>::Scan(StateId start, StateId state,
 
 template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId item1, const Arc &arc1,
-                                             StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
+                                      StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
   // VLOG(0) << "Complete " << start1 << "~>" << state1
   //         << " " << arc1.nextstate
   //         << " " << start2 << "~>" << state2
@@ -427,7 +427,7 @@ void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId ite
 // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
 template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, ItemId item1,
-                                                       Label open_paren, const Arc &arc1) {
+                                                Label open_paren, const Arc &arc1) {
   // VLOG(0) << "TryCompleteAsItem1 " << start1 << "~>" << state1 << " " << arc1.nextstate;
   StateId open_dest = arc1.nextstate;
   for (typename PdtParenData<Arc>::Iterator close_it = pdata_->FindClose(open_paren, open_dest);
@@ -592,11 +592,11 @@ void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId outer, c
 
       Relax(inner1,
             OutWeightOp<InWeight>::RightTimes(chart_->GetOutsideWeight(outer),
-                              Times(weight2, close_fa.arc.weight)));
+                                              Times(weight2, close_fa.arc.weight)));
       Relax(inner2,
             OutWeightOp<InWeight>::LeftRightTimes(chart_->GetOutsideWeight(outer),
-                                  Times(weight1, open_fa.arc.weight),
-                                  close_fa.arc.weight));
+                                                  Times(weight1, open_fa.arc.weight),
+                                                  close_fa.arc.weight));
     }
   }
 }
