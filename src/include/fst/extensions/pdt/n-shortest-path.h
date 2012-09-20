@@ -372,7 +372,6 @@ void PdtNShortestPath<Arc>::Enqueue(StateId start, StateId state, Weight weight,
   };
   heap_->Insert(it);
   ++n_enqueued_;
-  if (n_enqueued_ % 10000 == 0) VLOG(0) << n_enqueued_ << " enqueued";
 }
 
 // Outputs the path induced by `it' to `ofst_'; all epsilon

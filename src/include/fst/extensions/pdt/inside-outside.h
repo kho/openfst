@@ -62,7 +62,7 @@ namespace tr1 {
 template <class Arc>
 struct hash<fst::pdt::Span<Arc> > {
   size_t operator()(const fst::pdt::Span<Arc> &sp) const {
-    return sp.start * 7853 ^ sp.state;
+    return sp.start * 2750519 ^ sp.state;
   }
 };
 } // namespace tr1
@@ -80,39 +80,114 @@ const ItemId kNoItemId = -1;
 // shortest paths.
 const int kSuperfinal = -2;
 
+template <class InWeight>
+struct OutWeightOp {
+  typedef pair<InWeight, InWeight> OutWeight;
+
+  static inline OutWeight LeftTimes(OutWeight o, InWeight l) {
+    o.first = Times(o.first, l);
+    return o;
+  }
+
+  static inline OutWeight RightTimes(OutWeight o, InWeight r) {
+    o.second = Times(r, o.second);
+    return o;
+  }
+
+  static inline OutWeight LeftRightTimes(OutWeight o, InWeight l, InWeight r) {
+    o.first = Times(o.first, l);
+    o.second = Times(r, o.second);
+    return o;
+  }
+
+  static inline InWeight MiddleTimes(OutWeight o, InWeight m) {
+    return Times(o.first, Times(m, o.second));
+  }
+
+  static inline bool Compare(OutWeight a, OutWeight b) {
+    InWeight aa = Times(a.first, a.second), bb = Times(b.first, b.second);
+    return Plus(aa, bb) == aa;
+  }
+
+  static inline OutWeight One() {
+    return make_pair(InWeight::One(), InWeight::One());
+  }
+
+  static inline OutWeight Zero() {
+    return make_pair(InWeight::Zero(), InWeight::Zero());
+  }
+};
+
+template <>
+struct OutWeightOp<TropicalWeight> {
+  typedef TropicalWeight InWeight;
+  typedef TropicalWeight OutWeight;
+
+  static inline OutWeight LeftTimes(OutWeight o, InWeight l) {
+    return Times(o, l);
+  }
+
+  static inline OutWeight RightTimes(OutWeight o, InWeight r) {
+    return Times(o, r);
+  }
+
+  static inline OutWeight LeftRightTimes(OutWeight o, InWeight l, InWeight r) {
+    return Times(o, Times(l, r));
+  }
+
+  static inline InWeight MiddleTimes(OutWeight o, InWeight m) {
+    return Times(o, m);
+  }
+
+  static inline bool Compare(OutWeight a, OutWeight b) {
+    return Plus(a, b) == a;
+  }
+
+  static inline OutWeight One() {
+    return InWeight::One();
+  }
+
+  static inline OutWeight Zero() {
+    return InWeight::Zero();
+  }
+};
+
 //
-// Inside chart and inside algorithm
+// A big chart storing both inside and outside scores
 //
 
 template <class Arc>
-class InsideChart {
+class InsideOutsideChart {
  public:
-  typedef typename Arc::StateId StateId;
-  typedef typename Arc::Weight Weight;
   typedef typename Arc::Label Label;
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight InWeight;
+  typedef typename OutWeightOp<InWeight>::OutWeight OutWeight;
 
   struct Item {
-    StateId start, state;
-    Weight weight;
+    Span<Arc> span;
+    InWeight in_weight;
+    OutWeight out_weight;
     vector<ItemId> parents;            // used in topo-sort; duplicate edges should not matter
-    Item() : start(kNoStateId), state(kNoStateId), weight(Weight::Zero()) {}
-    Item(StateId p, StateId q): start(p), state(q), weight(Weight::Zero()) {}
+    Item() :
+        span(kNoStateId, kNoStateId),
+        in_weight(InWeight::Zero()),
+        out_weight(OutWeightOp<InWeight>::Zero()) {}
+    Item(StateId p, StateId q):
+        span(p, q),
+        in_weight(InWeight::Zero()),
+        out_weight(OutWeightOp<InWeight>::Zero()) {}
   };
 
  public:
   void Clear() {
     items_.clear();
-    groups_.clear();
+    span_ids_.clear();
   }
 
   ItemId Find(StateId start, StateId state) const {
-    typename StateStartMap::const_iterator it1 = groups_.find(state);
-    if (it1 == groups_.end())
-      return kNoItemId;
-    typename StartMap::const_iterator it2 = it1->second.find(start);
-    if (it2 == it1->second.end())
-      return kNoItemId;
-    return it2->second;
+    typename SpanIdMap::const_iterator it = span_ids_.find(Span<Arc>(start, state));
+    return it == span_ids_.end() ? kNoItemId : it->second;
   }
 
   ItemId FindOrAdd(StateId start, StateId state) {
@@ -120,33 +195,33 @@ class InsideChart {
     if (id == kNoItemId) {
       id = items_.size();
       items_.push_back(Item(start, state));
-      groups_[state][start] = id;
+      span_ids_[Span<Arc>(start, state)] = id;
     }
     return id;
   }
 
-  Weight InsideWeight(StateId start, StateId state) const {
-    ItemId id = Find(start, state);
-    if (id == kNoItemId)
-      return Weight::Zero();
-    else
-      return InsideWeight(id);
-  }
-
-  Weight InsideWeight(ItemId id) const {
-    return items_[id].weight;
-  }
-
-  void SetInsideWeight(ItemId id, Weight weight) {
-    items_[id].weight = weight;
-  }
-
-  const Item &InsideItem(ItemId id) const {
-    return items_[id];
-  }
-
   size_t Size() const {
     return items_.size();
+  }
+
+  Span<Arc> GetSpan(ItemId id) const {
+    return items_[id].span;
+  }
+
+  InWeight GetInsideWeight(ItemId id) const {
+    return items_[id].in_weight;
+  }
+
+  void SetInsideWeight(ItemId id, InWeight weight) {
+    items_[id].in_weight = weight;
+  }
+
+  OutWeight GetOutsideWeight(ItemId id) const {
+    return items_[id].out_weight;
+  }
+
+  void SetOutsideWeight(ItemId id, OutWeight weight) {
+    items_[id].out_weight = weight;
   }
 
   void AddParent(ItemId child, ItemId parent) {
@@ -160,39 +235,8 @@ class InsideChart {
   }
 
  private:
-  typedef unordered_map<StateId, ItemId> StartMap;
-  typedef unordered_map<StateId, StartMap> StateStartMap;
+  typedef unordered_map<Span<Arc>, ItemId> SpanIdMap;
 
- public:
-  class StartIterator {
-   public:
-    StartIterator(const InsideChart<Arc> &chart, StateId state) :
-        at_(), end_() {
-      typename StateStartMap::const_iterator it =
-          chart.groups_.find(state);
-      if (it != chart.groups_.end()) {
-        at_ = it->second.begin();
-        end_ = it->second.end();
-      }
-    }
-
-    bool Done() const {
-      return at_ == end_;
-    }
-
-    void Next() {
-      ++at_;
-    }
-
-    pair<StateId, ItemId> Value() const {
-      return *at_;
-    }
-
-   private:
-    typename StartMap::const_iterator at_, end_;
-  };
-
- private:
   void TopologicalSort_(ItemId id, vector<ItemId> *output, vector<bool> *visited) const {
     (*visited)[id] = true;
     for (typename vector<ItemId>::const_iterator it = items_[id].parents.begin();
@@ -203,11 +247,11 @@ class InsideChart {
   }
 
   vector<Item> items_;
-  StateStartMap groups_;
+  SpanIdMap span_ids_;
 };
 
 
-template <class Arc, class Queue=FifoQueue<typename Arc::StateId> >
+template <class Arc, template <class> class Queue = FifoQueue>
 class InsideAlgo {
  public:
   typedef typename Arc::Label Label;
@@ -218,7 +262,7 @@ class InsideAlgo {
              PdtParenData<Arc> *pdata = NULL) :
       ifst_(ifst.Copy()),
       pdata_(pdata), my_pdata_(parens),
-      chart_(NULL), queue_(NULL) {
+      chart_(NULL), queue_(NULL), enqueued_(NULL) {
     // If paren data is not given, use my own.
     if (pdata_ == NULL)
       pdata_ = &my_pdata_;
@@ -228,7 +272,7 @@ class InsideAlgo {
     delete ifst_;
   }
 
-  void FillChart(InsideChart<Arc> *chart) {
+  void FillChart(InsideOutsideChart<Arc> *chart) {
     chart_ = chart;
     chart_->Clear();
     n_dequeued_ = 0;
@@ -247,56 +291,56 @@ class InsideAlgo {
     pdata_->Finalize();
 
     VLOG(0) << "Inside: expansion: " << n_dequeued_
-            << " chart: " << chart_->Size()
-            << " score: " << chart_->InsideWeight(ifst_->Start(), kSuperfinal);
+            << " chart: " << chart_->Size();
 
     chart_ = NULL;
   }
 
  private:
+  typedef unordered_set<StateId> StateIdSet;
   void GetDistance(StateId);
 
   void ProcArc(StateId, StateId, ItemId, const Arc &);
 
   ItemId Relax(StateId, StateId, Weight); // returns the id of relaxed item
-  void Enqueue(StateId, StateId);
-  StateId Dequeue(StateId);
+  void Enqueue(StateId);
+  StateId Dequeue();
 
   void Scan(StateId, StateId, ItemId, const Arc &);
   void Complete(StateId, StateId, ItemId, const Arc &, StateId, StateId, ItemId, const Arc &);
   void TryCompleteAsItem1(StateId, StateId, ItemId, Label, const Arc &);
-  // void TryCompleteAsItem2(StateId, StateId, ItemId, Label, const Arc &);
 
   const Fst<Arc> *ifst_;
   // my_pdata_ is not used if pdata_ is given at initialization
   PdtParenData<Arc> *pdata_, my_pdata_;
-  InsideChart<Arc> *chart_;
-  Queue *queue_;
-  unordered_set<Span<Arc> > enqueued_;
-  unordered_set<StateId> got_distance_;
+  InsideOutsideChart<Arc> *chart_;
+  Queue<StateId> *queue_;
+  StateIdSet *enqueued_;
+  StateIdSet got_distance_;
 
   size_t n_dequeued_;
 };
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::GetDistance(StateId start) {
   if (got_distance_.count(start))
     return;
 
-  // VLOG(0) << "GetDistance " << start;
-
-  Queue q, *old_queue;
+  Queue<StateId> q, *old_queue;
   old_queue = queue_;
   queue_ = &q;
+
+  StateIdSet s, *old_enqueued;
+  old_enqueued = enqueued_;
+  enqueued_ = &s;
 
   Relax(start, start, Weight::One());
 
   while (!queue_->Empty()) {
-    StateId state = Dequeue(start);
+    StateId state = Dequeue();
     if (state != kSuperfinal) {
       ItemId item = chart_->Find(start, state);
       Weight rho = ifst_->Final(state);
-      // VLOG(0) << "State " << state << " Rho " << rho;
       if (rho != Weight::Zero())
         ProcArc(start, state, item, Arc(0, 0, rho, kSuperfinal));
       for (ArcIterator<Fst<Arc > > aiter(*ifst_, state);
@@ -305,14 +349,14 @@ void InsideAlgo<Arc, Queue>::GetDistance(StateId start) {
     }
   }
 
+  enqueued_ = old_enqueued;
   queue_ = old_queue;
   got_distance_.insert(start);
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
-                                     ItemId item, const Arc &arc) {
-  // VLOG(0) << "ProcArc " << start << "~>" << state << " " << arc.nextstate;
+                                            ItemId item, const Arc &arc) {
   Label open_paren = pdata_->OpenParenId(arc.ilabel);
   if (open_paren == kNoLabel) {     // lexical arc
     Scan(start, state, item, arc);
@@ -326,66 +370,64 @@ void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
   }
 }
 
-template <class Arc, class Queue> inline
-void InsideAlgo<Arc, Queue>::Enqueue(StateId start, StateId state) {
-  Span<Arc> sp(start, state);
-  if (enqueued_.count(sp)) {
+template <class Arc, template <class> class Queue> inline
+void InsideAlgo<Arc, Queue>::Enqueue(StateId state) {
+  if (enqueued_->count(state)) {
     queue_->Update(state);
   } else {
     queue_->Enqueue(state);
-    enqueued_.insert(sp);
+    enqueued_->insert(state);
   }
 }
 
-template <class Arc, class Queue> inline
-typename Arc::StateId InsideAlgo<Arc, Queue>::Dequeue(StateId start) {
+template <class Arc, template <class> class Queue> inline
+typename Arc::StateId InsideAlgo<Arc, Queue>::Dequeue() {
   StateId state = queue_->Head();
   queue_->Dequeue();
-  enqueued_.erase(Span<Arc>(start, state));
+  enqueued_->erase(state);
   ++n_dequeued_;
-  // VLOG(0) << "Dequeue " << start << "~>" << state;
   return state;
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 ItemId InsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight weight) {
   ItemId item = chart_->FindOrAdd(start, state);
-  Weight chart_weight = chart_->InsideWeight(item);
+  Weight chart_weight = chart_->GetInsideWeight(item);
   weight = Plus(chart_weight, weight);
   if (weight != chart_weight) {
     chart_->SetInsideWeight(item, weight);
-    Enqueue(start, state);
+    Enqueue(state);
   }
   return item;
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::Scan(StateId start, StateId state,
-                                  ItemId item, const Arc &arc) {
+                                         ItemId item, const Arc &arc) {
   // VLOG(0) << "Scan " << start << "~>" << state << " " << arc.nextstate;
-  ItemId new_item = Relax(start, arc.nextstate, Times(chart_->InsideWeight(item), arc.weight));
+  ItemId new_item = Relax(start, arc.nextstate, Times(chart_->GetInsideWeight(item), arc.weight));
   chart_->AddParent(new_item, item);
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::Complete(StateId start1, StateId state1, ItemId item1, const Arc &arc1,
-                                      StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
+                                             StateId start2, StateId state2, ItemId item2, const Arc &arc2) {
   // VLOG(0) << "Complete " << start1 << "~>" << state1
   //         << " " << arc1.nextstate
   //         << " " << start2 << "~>" << state2
   //         << " " << arc2.nextstate;
   ItemId new_item = Relax(start1, arc2.nextstate,
-                          Times(chart_->InsideWeight(item1),
+                          Times(chart_->GetInsideWeight(item1),
                                 Times(arc1.weight,
-                                      Times(chart_->InsideWeight(item2), arc2.weight))));
+                                      Times(chart_->GetInsideWeight(item2), arc2.weight))));
   chart_->AddParent(new_item, item1);
   chart_->AddParent(new_item, item2);
 }
 
 // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, ItemId item1,
-                                                Label open_paren, const Arc &arc1) {
+                                                       Label open_paren, const Arc &arc1) {
   // VLOG(0) << "TryCompleteAsItem1 " << start1 << "~>" << state1 << " " << arc1.nextstate;
   StateId open_dest = arc1.nextstate;
   for (typename PdtParenData<Arc>::Iterator close_it = pdata_->FindClose(open_paren, open_dest);
@@ -402,75 +444,19 @@ void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, 
 //
 // Outside
 //
-
-template <class Arc>
-class OutsideChart {
- public:
-  typedef typename Arc::StateId StateId;
-  typedef typename Arc::Label Label;
-  typedef pair<typename Arc::Weight, typename Arc::Weight> Weight;
-
-  void Clear() {
-    weights_.clear();
-    spans_.clear();
-  }
-
-  size_t Size() const {
-    return weights_.size();
-  }
-
-  ItemId Find(StateId start, StateId state) const {
-    typename SpanMap::const_iterator it = spans_.find(Span<Arc>(start, state));
-    if (it == spans_.end())
-      return kNoItemId;
-    else
-      return it->second;
-  }
-
-  ItemId FindOrAdd(StateId start, StateId state) {
-    ItemId id = Find(start, state);
-    if (id == kNoItemId) {
-      id = weights_.size();
-      weights_.push_back(Weight(Arc::Weight::Zero(), Arc::Weight::Zero()));
-      spans_[Span<Arc>(start, state)] = id;
-    }
-    return id;
-  }
-
-  Weight OutsideWeight(StateId start, StateId state) const {
-    ItemId id = Find(start, state);
-    if (id == kNoItemId)
-      return Weight(Arc::Weight::Zero(), Arc::Weight::Zero());
-    else
-      return OutsideWeight(id);
-  }
-
-  Weight OutsideWeight(ItemId id) const {
-    return weights_[id];
-  }
-
-  void SetOutsideWeight(ItemId id, typename Arc::Weight left, typename Arc::Weight right) {
-    weights_[id] = make_pair(left, right);
-  }
-
- private:
-  typedef unordered_map<Span<Arc>, ItemId> SpanMap;
-  vector<Weight> weights_;
-  SpanMap spans_;
-};
-
-template <class Arc, class Queue=FifoQueue<typename Arc::StateId> >
+template <class Arc, template <class> class Queue = FifoQueue>
 class OutsideAlgo {
  public:
   typedef typename Arc::StateId StateId;
-  typedef typename Arc::Weight Weight;
   typedef typename Arc::Label Label;
+  typedef typename Arc::Weight InWeight;
+  typedef typename OutWeightOp<InWeight>::OutWeight OutWeight;
 
   OutsideAlgo(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens,
               PdtParenData<Arc> *pdata = NULL) :
       ifst_(ifst.Copy()), parens_(parens),
       pdata_(pdata), my_pdata_(parens),
-      out_chart_(NULL), in_chart_(NULL), queue_(NULL) {
+      chart_(NULL), queue_(NULL) {
     if (pdata_ == NULL)
       pdata_ = &my_pdata_;
   }
@@ -479,72 +465,48 @@ class OutsideAlgo {
     delete ifst_;
   }
 
-  void FillChart(OutsideChart<Arc> *out_chart, InsideChart<Arc> *in_chart = NULL) {
-    out_chart_ = out_chart;
-    out_chart_->Clear();
+  // chart must have been filled by InsideAlgo
+  void FillChart(InsideOutsideChart<Arc> *chart) {
+    chart_ = chart;
     n_dequeued_ = 0;
 
     if (ifst_->Start() == kNoStateId)
       return;
 
-    InsideChart<Arc> local_in_chart;
-    if (in_chart) {
-      in_chart_ = in_chart;
-    } else {
-      in_chart_ = &local_in_chart;
-      InsideAlgo<Arc>(*ifst_, parens_, pdata_).FillChart(in_chart_);
-    }
-
-    ItemId goal = in_chart_->Find(ifst_->Start(), kSuperfinal);
+    ItemId goal = chart_->Find(ifst_->Start(), kSuperfinal);
     if (goal == kNoItemId)              // no accepting path
       return;
 
     BuildReverseArcIndex();
 
     vector<ItemId> topo;
-    in_chart_->TopologicalSort(goal, &topo);
+    chart_->TopologicalSort(goal, &topo);
 
-    Queue q;                // used for re-expanding in case of cycles
+    Queue<ItemId> q;                // used for re-expanding in case of cycles
     queue_ = &q;
 
     enqueued_.clear();
     seen_.clear();
-    seen_.resize(in_chart_->Size(), kNoItemId);
+    seen_.resize(chart_->Size(), false);
 
-    Relax(ifst_->Start(), kSuperfinal, Weight::One(), Weight::One());
+    Relax(goal, OutWeightOp<InWeight>::One());
 
     for (typename vector<ItemId>::const_reverse_iterator tit = topo.rbegin();
          tit != topo.rend(); ++tit) {
-      const typename InsideChart<Arc>::Item &in_item = in_chart_->InsideItem(*tit);
-      ItemId out_item = out_chart_->Find(in_item.start, in_item.state);
-      seen_[out_item] = *tit;
-      Expand(in_item, out_item);
+      ItemId item = *tit;
+      seen_[item] = true;
+      Expand(item);
 
       while (!q.Empty()) {
-        out_item = Dequeue();
-        Expand(in_chart_->InsideItem(seen_[out_item]), out_item);
+        item = Dequeue();
+        Expand(item);
       }
     }
 
-
-    // while (!q.Empty()) {
-    //   Span<Arc> sp = Dequeue();
-    //   // if (time_stamps_.count(sp))
-    //   //   VLOG(0) << "Revisit " << sp.start << " " << sp.state;
-    //   // time_stamps_[sp] = n_dequeued_;
-    //   ItemId item = out_chart_->Find(sp.start, sp.state);
-    //   for (typename ArcIndex::const_iterator it = arcs_.find(sp.state);
-    //        it != arcs_.end() && it->first == sp.state; ++it) {
-    //     const FullArc<Arc> &fa = it->second;
-    //     ProcArc(sp.start, sp.state, item, fa);
-    //   }
-    // }
-
     VLOG(0) << "Outside: expansion: " << n_dequeued_ + topo.size()
-            << " chart: " << out_chart_->Size();
+            << " topo: " << topo.size();
 
-    in_chart_ = NULL;
-    out_chart_ = NULL;
+    chart_ = NULL;
     queue_ = NULL;
   }
 
@@ -553,10 +515,10 @@ class OutsideAlgo {
 
   void BuildReverseArcIndex();
 
-  void Expand(const typename InsideChart<Arc>::Item &, ItemId);
+  void Expand(ItemId);
   void ProcArc(StateId, StateId, ItemId, const FullArc<Arc> &);
 
-  void Relax(StateId, StateId, Weight, Weight);
+  void Relax(ItemId, OutWeight);
   void Back(StateId, StateId, ItemId, const FullArc<Arc> &);
   void Down(StateId, StateId, ItemId, const FullArc<Arc> &, Label);
 
@@ -566,24 +528,21 @@ class OutsideAlgo {
   const Fst<Arc> *ifst_;
   const vector<pair<Label, Label> > &parens_;
   PdtParenData<Arc> *pdata_, my_pdata_;
-  OutsideChart<Arc> *out_chart_;
-  InsideChart<Arc> *in_chart_;
-  Queue *queue_;
+  InsideOutsideChart<Arc> *chart_;
+  Queue<ItemId> *queue_;
   ArcIndex arcs_;
   unordered_set<ItemId> enqueued_;
-  vector<ItemId> seen_;
+  vector<bool> seen_;
   size_t n_dequeued_;
-
-  // unordered_map<Span<Arc>, size_t> time_stamps_;
 };
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
   for (StateIterator<Fst<Arc> > siter(*ifst_); !siter.Done(); siter.Next()) {
     StateId s = siter.Value();
-    Weight rho = ifst_->Final(s);
+    InWeight rho = ifst_->Final(s);
     // Hallucinate the pseudo-arc
-    if (rho != Weight::Zero())
+    if (rho != InWeight::Zero())
       arcs_.insert(make_pair(kSuperfinal, FullArc<Arc> (s, Arc(0, 0, rho, kSuperfinal))));
     for (ArcIterator<Fst<Arc> > aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
       const Arc &arc = aiter.Value();
@@ -592,17 +551,17 @@ void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
   }
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Expand(const typename InsideChart<Arc>::Item &in_item,
-                                     ItemId out_item) {
-  for (typename ArcIndex::const_iterator it = arcs_.find(in_item.state);
-       it != arcs_.end() && it->first == in_item.state; ++it) {
+template <class Arc, template <class> class Queue> inline
+void OutsideAlgo<Arc, Queue>::Expand(ItemId item) {
+  Span<Arc> span = chart_->GetSpan(item);
+  for (typename ArcIndex::const_iterator it = arcs_.find(span.state);
+       it != arcs_.end() && it->first == span.state; ++it) {
     const FullArc<Arc> &fa = it->second;
-    ProcArc(in_item.start, in_item.state, out_item, fa);
+    ProcArc(span.start, span.state, item, fa);
   }
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
   Label open_paren = pdata_->OpenParenId(fa.arc.ilabel);
   if (open_paren == kNoLabel)
@@ -611,80 +570,68 @@ void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item,
     Down(start, state, item, fa, open_paren);
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight left, Weight right) {
-  ItemId item = out_chart_->FindOrAdd(start, state);
-  pair<Weight, Weight> chart_weight = out_chart_->OutsideWeight(item);
-  Weight old_product = Times(chart_weight.first, chart_weight.second),
-      new_product = Times(left, right);
-  if (Plus(new_product, old_product) != old_product) {
-    out_chart_->SetOutsideWeight(item, left, right);
-    Enqueue(item);
-  }
+template <class Arc, template <class> class Queue> inline
+void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId outer, const FullArc<Arc> &fa) {
+  ItemId inner = chart_->Find(start, fa.state);
+  if (inner != kNoItemId)
+    Relax(inner, OutWeightOp<InWeight>::RightTimes(chart_->GetOutsideWeight(outer), fa.arc.weight));
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId item, const FullArc<Arc> &fa) {
-  StateId q1 = start, q2 = fa.state;
-  ItemId id = in_chart_->Find(q1, q2);
-  const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
-  if (id != kNoItemId) {
-    Relax(q1, q2,
-          outter.first,
-          Times(fa.arc.weight, outter.second));
-  }
-}
-
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId item, const FullArc<Arc> &close_fa, Label open_paren) {
+template <class Arc, template <class> class Queue> inline
+void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId outer, const FullArc<Arc> &close_fa, Label open_paren) {
   StateId q1 = start, q4 = close_fa.state;
-  const pair<Weight, Weight> &outter = out_chart_->OutsideWeight(item);
 
   for (typename PdtParenData<Arc>::Iterator it = pdata_->FindOpen(open_paren, q4);
        !it.Done(); it.Next()) {
     const FullArc<Arc> &open_fa = it.Value();
     StateId q2 = open_fa.state, q3 = open_fa.arc.nextstate;
-    ItemId id1 = in_chart_->Find(q1, q2),
-        id2 = in_chart_->Find(q3, q4);
+    ItemId inner1 = chart_->Find(q1, q2), inner2 = chart_->Find(q3, q4);
 
-    if (id1 != kNoItemId && id2 != kNoItemId) {
-      Weight weight1 = in_chart_->InsideWeight(id1),
-          weight2 = in_chart_->InsideWeight(id2);
+    if (inner1 != kNoItemId && inner2 != kNoItemId) {
+      InWeight weight1 = chart_->GetInsideWeight(inner1), weight2 = chart_->GetInsideWeight(inner2);
 
-      Relax(q1, q2,
-            outter.first,
-            Times(open_fa.arc.weight,
-                  Times(weight2,
-                        Times(close_fa.arc.weight, outter.second))));
-      Relax(q3, q4,
-            Times(outter.first, Times(weight1, open_fa.arc.weight)),
-            Times(close_fa.arc.weight, outter.second));
+      Relax(inner1,
+            OutWeightOp<InWeight>::RightTimes(chart_->GetOutsideWeight(outer),
+                              Times(weight2, close_fa.arc.weight)));
+      Relax(inner2,
+            OutWeightOp<InWeight>::LeftRightTimes(chart_->GetOutsideWeight(outer),
+                                  Times(weight1, open_fa.arc.weight),
+                                  close_fa.arc.weight));
     }
   }
 }
 
-template <class Arc, class Queue> inline
-void OutsideAlgo<Arc, Queue>::Enqueue(ItemId out_item) {
+template <class Arc, template <class> class Queue> inline
+void OutsideAlgo<Arc, Queue>::Relax(ItemId item, OutWeight weight) {
+  OutWeight chart_weight = chart_->GetOutsideWeight(item);
+  if (OutWeightOp<InWeight>::Compare(weight, chart_weight)) {
+    chart_->SetOutsideWeight(item, weight);
+    Enqueue(item);
+  }
+}
+
+template <class Arc, template <class> class Queue> inline
+void OutsideAlgo<Arc, Queue>::Enqueue(ItemId item) {
   // Only enqueue items that have been seen; items that haven't will
   // eventually be processed by the topological traversal in
   // FillChart().
-  if (seen_[out_item] != kNoItemId) {
-    if (enqueued_.count(out_item)) {
-      queue_->Update(out_item);
+  if (seen_[item]) {
+    if (enqueued_.count(item)) {
+      queue_->Update(item);
     } else {
-      queue_->Enqueue(out_item);
-      enqueued_.insert(out_item);
+      queue_->Enqueue(item);
+      enqueued_.insert(item);
     }
   }
 }
 
-template <class Arc, class Queue> inline
+template <class Arc, template <class> class Queue> inline
 ItemId OutsideAlgo<Arc, Queue>::Dequeue() {
-  ItemId out_item = queue_->Head();
+  ItemId item = queue_->Head();
   queue_->Dequeue();
-  enqueued_.erase(out_item);
+  enqueued_.erase(item);
   ++n_dequeued_;
-  return out_item;
+  return item;
 }
 
 } // namespace pdt
