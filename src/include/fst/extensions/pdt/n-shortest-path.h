@@ -41,7 +41,73 @@ struct PdtNShortestPathOptions {
 };
 
 namespace pdt {
-template <class Arc> class PdtNShortestPath;
+template <class Arc>
+class OutsideHeuristics {
+ public:
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight InWeight;
+  typedef typename Arc::Label Label;
+  typedef typename OutWeightOp<InWeight>::OutWeight OutWeight;
+
+  OutsideHeuristics(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
+                    PdtParenData<Arc> *pdata) {
+    InsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
+    OutsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
+  }
+
+  InWeight Score(StateId start, StateId state, InWeight weight) {
+    ItemId item = chart_.Find(start, state);
+    OutWeight outside_weight = item == kNoItemId ?
+        OutWeightOp<InWeight>::Zero() :
+        chart_.GetOutsideWeight(item);
+    return OutWeightOp<InWeight>::MiddleTimes(outside_weight, weight);
+  }
+
+ private:
+  InsideOutsideChart<Arc> chart_;
+};
+
+
+template <class Arc>
+class ReverseInsideHeuristics {
+ public:
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
+  typedef typename Arc::Label Label;
+
+  ReverseInsideHeuristics(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
+                          PdtParenData<Arc> *pdata) :
+      pdata_(pdata) {
+    ReverseInsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
+  }
+
+  Weight Score(StateId start, StateId state, Weight weight) {
+    typename CacheMap::const_iterator it = cache_.find(Span<Arc>(start, state));
+    Weight ret(Weight::Zero());
+    if (it == cache_.end()) {
+      for (typename PdtParenData<Arc>::SubFinalIterator sfit = pdata_->FindSubFinal(start);
+           !sfit.Done(); sfit.Next()) {
+        StateId subfinal = sfit.Value();
+        Weight d = chart_.GetWeight(chart_.Find(state, subfinal));
+        ret = Plus(ret, d);
+      }
+      cache_[Span<Arc>(start, state)] = ret;
+    } else {
+      ret = it->second;
+    }
+    return Times(weight, ret);
+  }
+
+ private:
+  typedef unordered_map<Span<Arc>, Weight> CacheMap;
+
+  SpanWeightChart<Arc> chart_;
+  CacheMap cache_;
+  PdtParenData<Arc> *pdata_;
+};
+
+
+template <class Arc, template <class> class Heuristics> class PdtNShortestPath;
 
 template <class Arc>
 class PdtNShortestPathData {
@@ -94,7 +160,7 @@ class PdtNShortestPathData {
     ItemId item2;
     Label ilabel2, olabel2;
 
-    friend class PdtNShortestPathData<Arc>;
+    template <class A> friend class PdtNShortestPathData;
   };
 
   struct Item {
@@ -180,7 +246,7 @@ class PdtNShortestPathData {
   vector<Item> items_;
   unordered_map<StateId, unordered_multimap<StateId, ItemId> > groups_;
 
-  friend class PdtNShortestPath<Arc>;
+  template <class A, template <class> class H> friend class PdtNShortestPath;
 };
 
 template <class Arc>
@@ -204,7 +270,7 @@ void PdtNShortestPathData<Arc>::Traverse(const ItemParent &parent, vector<pair<L
   }
 }
 
-template <class Arc>
+template <class Arc, template <class> class Heuristics>
 class PdtNShortestPath {
  public:
   PdtNShortestPath(const Fst<Arc> &ifst,
@@ -212,7 +278,7 @@ class PdtNShortestPath {
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), ofst_(NULL), parens_(parens),
       opts_(opts), error_(false), n_found_(0), n_enqueued_(0), heap_(NULL),
-      pdata_(parens) {
+      pdata_(parens), heuristics_(NULL) {
     if ((Weight::Properties() & (kPath | kRightSemiring | kLeftSemiring)) !=
         (kPath | kRightSemiring | kLeftSemiring)) {
       FSTERROR() << "PdtNShortestPath: Weight needs to have the path"
@@ -233,10 +299,14 @@ class PdtNShortestPath {
     if (ifst_->Start() == kNoStateId)
       return 0;
 
-    PreComputeHeuristics();
+    Heuristics<Arc> h(*ifst_, parens_, &pdata_);
+    heuristics_ = &h;
+
     DoSearch();
 
     if (error_) ofst->SetProperties(kError, kError);
+
+    heuristics_ = NULL;
 
     return n_found_;
   }
@@ -262,7 +332,6 @@ class PdtNShortestPath {
   // Private methods; all methods accessing `ifst_' assume it is not
   // empty (i.e. ifst_->Start() != kNoStateId).
   void ClearFst(MutableFst<Arc> *ofst);
-  void PreComputeHeuristics();
   void DoSearch();
   void EnqueueAxioms();
   void EnqueueAxiom(StateId s);
@@ -287,31 +356,23 @@ class PdtNShortestPath {
   size_t n_enqueued_;
   PriorityQueue *heap_;
   PdtParenData<Arc> pdata_;
-  InsideOutsideChart<Arc> chart_;
   NspData theorems_;
+  Heuristics<Arc> *heuristics_;
 
   DISALLOW_COPY_AND_ASSIGN(PdtNShortestPath);
 };
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::ClearFst(MutableFst<Arc> *ofst) {
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::ClearFst(MutableFst<Arc> *ofst) {
   ofst_ = ofst;
   ofst->DeleteStates();
   ofst->SetInputSymbols(ifst_->InputSymbols());
   ofst->SetOutputSymbols(ifst_->OutputSymbols());
 }
 
-// Pre-computes the distance from the start (to the final) to (from)
-// each state when the input is treated as a plain FST.
-template <class Arc> inline
-void PdtNShortestPath<Arc>::PreComputeHeuristics() {
-  InsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&chart_);
-  OutsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&chart_);
-}
-
 // A* search
-template <class Arc>
-void PdtNShortestPath<Arc>::DoSearch() {
+template <class Arc, template <class> class Heuristics>
+void PdtNShortestPath<Arc, Heuristics>::DoSearch() {
   PriorityQueue q;
   heap_ = &q;
 
@@ -341,8 +402,8 @@ void PdtNShortestPath<Arc>::DoSearch() {
 
 // Enqueues all the axioms of the form `p \leadsto p: 1` where
 // either p is the start or it has an incoming arc with open paren.
-template <class Arc>
-void PdtNShortestPath<Arc>::EnqueueAxioms() {
+template <class Arc, template <class> class Heuristics>
+void PdtNShortestPath<Arc, Heuristics>::EnqueueAxioms() {
   typedef unordered_set<StateId> StateSet;
   StateSet axioms;
   axioms.insert(ifst_->Start());
@@ -356,23 +417,19 @@ void PdtNShortestPath<Arc>::EnqueueAxioms() {
   }
   for (typename StateSet::const_iterator i = axioms.begin(); i != axioms.end(); ++i)
     EnqueueAxiom(*i);
+  // EnqueueAxiom(ifst_->Start());
 }
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::EnqueueAxiom(StateId s) {
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::EnqueueAxiom(StateId s) {
   Enqueue(s, s, Weight::One(), ItemParent::Axiom());
 }
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
-  ItemId chart_item = chart_.Find(start, state);
-  typename OutWeightOp<Weight>::OutWeight outside_weight =
-      chart_item == kNoItemId ?
-      OutWeightOp<Weight>::Zero() :
-      chart_.GetOutsideWeight(chart_item);
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
   Item it = {
     start, state, weight,
-    OutWeightOp<Weight>::MiddleTimes(outside_weight, weight),
+    heuristics_->Score(start, state, weight),
     parent
   };
   heap_->Insert(it);
@@ -383,8 +440,8 @@ void PdtNShortestPath<Arc>::Enqueue(StateId start, StateId state, Weight weight,
 // transitions are kept; if `opts_.keep_parentheses' is false,
 // parentheses will also become epsilon (this actually happens in
 // Complete()).
-template <class Arc>
-void PdtNShortestPath<Arc>::OutputPath(const Item &it) {
+template <class Arc, template <class> class Heuristics>
+void PdtNShortestPath<Arc, Heuristics>::OutputPath(const Item &it) {
   vector<pair<Label, Label> > path_label;
   theorems_.GetPathLabels(it, &path_label);
   if (path_label.empty()) {
@@ -408,26 +465,27 @@ void PdtNShortestPath<Arc>::OutputPath(const Item &it) {
   ofst_->SetFinal(src, it.weight);
 }
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
   Label open_paren = pdata_.OpenParenId(arc.ilabel);
   if (open_paren == kNoLabel)           // lexical arc
     Scan(item, item_id, arc);
-  else if (open_paren == arc.ilabel)    // open paren
+  else if (open_paren == arc.ilabel) {  // open paren
+    // EnqueueAxiom(arc.nextstate);
     TryCompleteAsItem1(item, item_id, open_paren, arc);
-  else                                  // close paren
+  } else                                  // close paren
     TryCompleteAsItem2(item, item_id, open_paren, arc);
 }
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::Scan(const Item &item, ItemId item_id, const Arc &arc) {
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::Scan(const Item &item, ItemId item_id, const Arc &arc) {
   Enqueue(item.start, arc.nextstate,
           Times(item.weight, arc.weight),
           ItemParent::Scan(item_id, arc));
 }
 
-template <class Arc> inline
-void PdtNShortestPath<Arc>::Complete(const Item &item1, ItemId item1_id, const Arc &arc1,
+template <class Arc, template <class> class Heuristics> inline
+void PdtNShortestPath<Arc, Heuristics>::Complete(const Item &item1, ItemId item1_id, const Arc &arc1,
                                      const Item &item2, ItemId item2_id, const Arc &arc2) {
   Enqueue(item1.start, arc2.nextstate,
           Times(item1.weight, Times(arc1.weight, Times (item2.weight, arc2.weight))),
@@ -435,8 +493,8 @@ void PdtNShortestPath<Arc>::Complete(const Item &item1, ItemId item1_id, const A
 }
 
 // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
-template <class Arc>
-void PdtNShortestPath<Arc>::TryCompleteAsItem1(const Item &item1, ItemId item1_id,
+template <class Arc, template <class> class Heuristics>
+void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem1(const Item &item1, ItemId item1_id,
                                                Label open_paren, const Arc &arc1) {
   StateId open_dest = arc1.nextstate;
 
@@ -455,8 +513,8 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem1(const Item &item1, ItemId item1_i
 }
 
 // Rule (C) as ?, ??, it, arc |- (?.start, arc.nextstate)
-template <class Arc>
-void PdtNShortestPath<Arc>::TryCompleteAsItem2(const Item &item2, ItemId item2_id,
+template <class Arc, template <class> class Heuristics>
+void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem2(const Item &item2, ItemId item2_id,
                                                Label open_paren, const Arc &arc2) {
   StateId close_src = item2.state;
 
@@ -476,13 +534,13 @@ void PdtNShortestPath<Arc>::TryCompleteAsItem2(const Item &item2, ItemId item2_i
 
 } // namespace pdt
 
-template <class Arc>
+template <class Arc, template <class> class Heuristics>
 size_t NShortestPath(const Fst<Arc> &ifst,
                      const vector<pair<typename Arc::Label,
                      typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      const PdtNShortestPathOptions &opts) {
-  pdt::PdtNShortestPath<Arc> pnsp(ifst, parens, opts);
+  pdt::PdtNShortestPath<Arc, Heuristics> pnsp(ifst, parens, opts);
   return pnsp.NShortestPath(ofst);
 }
 
@@ -492,7 +550,7 @@ size_t NShortestPath(const Fst<Arc> &ifst,
                      typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      size_t n) {
-  return NShortestPath(ifst, parens, ofst, PdtNShortestPathOptions(n));
+  return NShortestPath<Arc, pdt::OutsideHeuristics>(ifst, parens, ofst, PdtNShortestPathOptions(n));
 }
 } // namespace fst
 

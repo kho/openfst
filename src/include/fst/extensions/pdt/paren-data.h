@@ -72,8 +72,9 @@ class PdtParenData {
   typedef const FullArc<Arc> *FullArcPtr;
   typedef unordered_set<FullArc<Arc> > FullArcSet;
   typedef unordered_set<FullArcPtr> FullArcPtrSet;
-  typedef unordered_multimap<ParenState<Arc>, FullArcPtr, typename ParenState<Arc>::Hash> OpenArcMap;
+  typedef unordered_multimap<ParenState<Arc>, FullArcPtr, typename ParenState<Arc>::Hash> ParenArcMap;
   typedef unordered_map<ParenState<Arc>, FullArcPtrSet, typename ParenState<Arc>::Hash> SureMap;
+  typedef unordered_multimap<StateId, StateId> SubFinalMap;
 
  public:
   // Iterator through full arcs
@@ -99,6 +100,31 @@ class PdtParenData {
     SetIter at_, end_;
     template <class A>
     friend class PdtParenData;
+  };
+
+  // Iterator through sub-final states
+  class SubFinalIterator {
+   public:
+    bool Done() const {
+      return at_ == end_;
+    }
+
+    void Next() {
+      ++at_;
+    }
+
+    StateId Value() const {
+      return at_->second;
+    }
+
+   private:
+    typedef typename SubFinalMap::const_iterator MapIter;
+    SubFinalIterator() : at_(), end_() {}
+    SubFinalIterator(MapIter begin, MapIter end) :
+        at_(begin), end_(end) {}
+
+    MapIter at_, end_;
+    template <class A> friend class PdtParenData;
   };
 
   // The constructor only assigns paren ids
@@ -132,6 +158,9 @@ class PdtParenData {
         if (open_paren == arc.ilabel) {
           FullArcPtr fa_ptr = FindOrAddArc(s, arc);
           open_arcs_.insert(make_pair(ParenState<Arc>(open_paren, arc.nextstate), fa_ptr));
+        } else if (open_paren != kNoLabel) {
+          FullArcPtr fa_ptr = FindOrAddArc(s, arc);
+          close_arcs_.insert(make_pair(ParenState<Arc>(open_paren, fa_ptr->state), fa_ptr));
         }
       }
     }
@@ -140,13 +169,26 @@ class PdtParenData {
   // Should be called after all close paren arcs have been seen
   void Finalize() {
     open_arcs_.clear();
+    close_arcs_.clear();
     finalized_ = true;
+  }
+
+  void ReportOpenParen(StateId open_src, const Arc &open_arc, StateId close_src) {
+    Label open_paren = OpenParenId(open_arc.ilabel);
+    FullArcPtr open_fa_ptr = FindOrAddArc(open_src, open_arc);
+    StateId open_dest = open_arc.nextstate;
+    for (typename ParenArcMap::const_iterator it = close_arcs_.find(ParenState<Arc>(open_paren, close_src));
+         it != open_arcs_.end() && it->first == ParenState<Arc>(open_paren, close_src); ++it) {
+      FullArcPtr close_fa_ptr = it->second;
+      open_map_[ParenState<Arc>(open_paren, close_src)].insert(open_fa_ptr);
+      close_map_[ParenState<Arc>(open_paren, open_dest)].insert(close_fa_ptr);
+    }
   }
 
   void ReportCloseParen(StateId open_dest, StateId close_src, const Arc &close_arc) {
     Label open_paren = OpenParenId(close_arc.ilabel);
     FullArcPtr close_fa_ptr = FindOrAddArc(close_src, close_arc);
-    for (typename OpenArcMap::const_iterator it = open_arcs_.find(ParenState<Arc>(open_paren, open_dest));
+    for (typename ParenArcMap::const_iterator it = open_arcs_.find(ParenState<Arc>(open_paren, open_dest));
          it != open_arcs_.end() && it->first == ParenState<Arc>(open_paren, open_dest); ++it) {
       FullArcPtr open_fa_ptr = it->second;
       open_map_[ParenState<Arc>(open_paren, close_src)].insert(open_fa_ptr);
@@ -164,6 +206,16 @@ class PdtParenData {
   // open_dest with a matching paren.
   Iterator FindClose(Label open_paren, StateId open_dest) const {
     return Find(open_paren, open_dest, close_map_);
+  }
+
+  void ReportSubFinal(StateId substart, StateId subfinal) {
+    subfinals_.insert(make_pair(substart, subfinal));
+  }
+
+  SubFinalIterator FindSubFinal(StateId substart) {
+    pair<typename SubFinalMap::const_iterator, typename SubFinalMap::const_iterator> p =
+        subfinals_.equal_range(substart);
+    return SubFinalIterator(p.first, p.second);
   }
 
  private:
@@ -190,8 +242,9 @@ class PdtParenData {
   bool finalized_;
   unordered_map<Label, Label> open_paren_;
   SureMap open_map_, close_map_;
-  OpenArcMap open_arcs_;
+  ParenArcMap open_arcs_, close_arcs_;
   FullArcSet full_arcs_;
+  SubFinalMap subfinals_;
 };
 
 } // namespace pdt

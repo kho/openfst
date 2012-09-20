@@ -367,6 +367,7 @@ void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
     TryCompleteAsItem1(start, state, item, open_paren, arc);
   } else {               // close paren
     pdata_->ReportCloseParen(start, state, arc);
+    pdata_->ReportSubFinal(start, state);
   }
 }
 
@@ -633,6 +634,283 @@ ItemId OutsideAlgo<Arc, Queue>::Dequeue() {
   ++n_dequeued_;
   return item;
 }
+
+
+template <class Arc>
+class SpanWeightChart {
+ public:
+  typedef typename Arc::Label Label;
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
+
+ public:
+  void Clear() {
+    weights_.clear();
+    span_ids_.clear();
+  }
+
+  ItemId Find(StateId start, StateId state) const {
+    typename SpanIdMap::const_iterator it = span_ids_.find(Span<Arc>(start, state));
+    return it == span_ids_.end() ? kNoItemId : it->second;
+  }
+
+  ItemId FindOrAdd(StateId start, StateId state) {
+    ItemId id = Find(start, state);
+    if (id == kNoItemId) {
+      id = weights_.size();
+      weights_.push_back(Weight::Zero());
+      span_ids_[Span<Arc>(start, state)] = id;
+    }
+    return id;
+  }
+
+  size_t Size() const {
+    return weights_.size();
+  }
+
+  Weight GetWeight(ItemId id) const {
+    return weights_[id];
+  }
+
+  void SetWeight(ItemId id, Weight weight) {
+    weights_[id] = weight;
+  }
+
+ private:
+  typedef unordered_map<Span<Arc>, ItemId> SpanIdMap;
+
+  vector<Weight> weights_;
+  SpanIdMap span_ids_;
+};
+
+// Almost the same as InsideAlgo except that computes reverse inside weights
+template <class Arc, template <class> class Queue = FifoQueue>
+class ReverseInsideAlgo {
+ public:
+  typedef typename Arc::Label Label;
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
+
+  ReverseInsideAlgo(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens,
+             PdtParenData<Arc> *pdata = NULL) :
+      ifst_(ifst.Copy()),
+      pdata_(pdata), my_pdata_(parens),
+      chart_(NULL), queue_(NULL), enqueued_(NULL) {
+    // If paren data is not given, use my own.
+    if (pdata_ == NULL)
+      pdata_ = &my_pdata_;
+  }
+
+  ~ReverseInsideAlgo() {
+    delete ifst_;
+  }
+
+  void FillChart(SpanWeightChart<Arc> *chart) {
+    chart_ = chart;
+    chart_->Clear();
+    n_dequeued_ = 0;
+
+    // Other functions can assume the FST has at least one reachable
+    // state.
+    if (ifst_->Start() == kNoStateId)
+      return;
+
+    BuildReverseArcIndex();
+
+    pdata_->Prepare(*ifst_);
+
+    pdata_->ReportSubFinal(ifst_->Start(), kSuperfinal);
+
+    GetDistance(kSuperfinal);
+
+    // At this point all reachable paren pairs have been visited thus
+    // reported.
+    pdata_->Finalize();
+
+    VLOG(0) << "ReverseInside: expansion: " << n_dequeued_
+            << " chart: " << chart_->Size();
+
+    chart_ = NULL;
+  }
+
+ private:
+  typedef unordered_set<StateId> StateIdSet;
+  typedef unordered_multimap<StateId, FullArc<Arc> > ArcIndex;
+
+  void BuildReverseArcIndex();
+
+  void GetDistance(StateId);
+
+  void ProcArc(StateId, const Arc &, ItemId, StateId);
+
+  void Relax(StateId, StateId, Weight); // returns the id of relaxed item
+  void Enqueue(StateId);
+  StateId Dequeue();
+
+  void Scan(StateId, const Arc &, ItemId, StateId);
+  void Complete(StateId, const Arc &, ItemId, const Arc &, ItemId, StateId);
+  void TryComplete(StateId, const Arc &, ItemId, StateId, Label);
+
+  const Fst<Arc> *ifst_;
+  // my_pdata_ is not used if pdata_ is given at initialization
+  PdtParenData<Arc> *pdata_, my_pdata_;
+  SpanWeightChart<Arc> *chart_;
+  Queue<StateId> *queue_;
+  StateIdSet *enqueued_;
+  StateIdSet got_distance_;
+  ArcIndex arcs_;
+
+  size_t n_dequeued_;
+};
+
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
+  for (StateIterator<Fst<Arc> > siter(*ifst_); !siter.Done(); siter.Next()) {
+    StateId s = siter.Value();
+    Weight rho = ifst_->Final(s);
+    // Hallucinate the pseudo-arc
+    if (rho != Weight::Zero())
+      arcs_.insert(make_pair(kSuperfinal, FullArc<Arc> (s, Arc(0, 0, rho, kSuperfinal))));
+    for (ArcIterator<Fst<Arc> > aiter(*ifst_, s); !aiter.Done(); aiter.Next()) {
+      const Arc &arc = aiter.Value();
+      arcs_.insert(make_pair(arc.nextstate, FullArc<Arc> (s, arc)));
+    }
+  }
+}
+
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::GetDistance(StateId state) {
+  if (got_distance_.count(state))
+    return;
+
+  Queue<StateId> q, *old_queue;
+  old_queue = queue_;
+  queue_ = &q;
+
+  StateIdSet s, *old_enqueued;
+  old_enqueued = enqueued_;
+  enqueued_ = &s;
+
+  Relax(state, state, Weight::One());
+
+  while (!queue_->Empty()) {
+    StateId start = Dequeue();
+    ItemId item = chart_->Find(start, state);
+    for (typename ArcIndex::const_iterator it = arcs_.find(start);
+         it != arcs_.end() && it->first == start; ++it) {
+      const FullArc<Arc> &fa = it->second;
+      ProcArc(fa.state, fa.arc, item, state);
+    }
+  }
+
+  enqueued_ = old_enqueued;
+  queue_ = old_queue;
+  got_distance_.insert(state);
+}
+
+//   ?
+// @ -> @ ~> @
+// s a    i  s
+// t r    t  t
+// a c    e  a
+// r      m  t
+// t         e
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::ProcArc(StateId start, const Arc &arc, ItemId item, StateId state) {
+  Label open_paren = pdata_->OpenParenId(arc.ilabel);
+  if (open_paren == kNoLabel) {     // lexical arc
+    Scan(start, arc, item, state);
+  } else if (open_paren == arc.ilabel) { // open paren
+    pdata_->ReportOpenParen(start, arc, state);
+    pdata_->ReportSubFinal(start, state);
+  } else {                              // close paren
+    GetDistance(start);
+    // At this point all relevant open paren is known to pdata_ and
+    // all reverse inside items to start have been proved
+    TryComplete(start, arc, item, state, open_paren);
+  }
+}
+
+//   a
+// @ -> @ ~> @
+// s a    i  s
+// t r    t  t
+// a c    e  a
+// r      m  t
+// t         e
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::Scan(StateId start, const Arc &arc, ItemId item, StateId state) {
+  Relax(start, state, Times(arc.weight, chart_->GetWeight(item)));
+}
+
+//   (         )
+// @ -> @ ~> @ -> @ ~> @
+// s a    i  s a    i  s
+// t r    t  t r    t  t
+// a c    e  a c    e  a
+// r 1    m  t 2    m  t
+// t      1  e      2  e
+// 1         1         2
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::TryComplete(StateId state1, const Arc &arc2,
+                                                ItemId item2, StateId state2,
+                                                Label open_paren) {
+  StateId close_src = state1;
+  for (typename PdtParenData<Arc>::Iterator open_it = pdata_->FindOpen(open_paren, close_src);
+       !open_it.Done(); open_it.Next()) {
+    const FullArc<Arc> &fa = open_it.Value();
+    StateId start1 = fa.state;
+    const Arc &arc1 = fa.arc;
+    StateId open_dest = arc1.nextstate;
+    ItemId item1 = chart_->Find(open_dest, close_src);
+    Complete(start1, arc1, item1, arc2, item2, state2);
+  }
+}
+
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::Complete(StateId start1, const Arc &arc1, ItemId item1,
+                                             const Arc &arc2, ItemId item2, StateId state2) {
+  // VLOG(0) << "Complete " << start1 << "~>" << state1
+  //         << " " << arc1.nextstate
+  //         << " " << start2 << "~>" << state2
+  //         << " " << arc2.nextstate;
+  Relax(start1, state2,
+        Times(arc1.weight,
+              Times(chart_->GetWeight(item1),
+                    Times(arc2.weight,
+                          chart_->GetWeight(item2)))));
+}
+
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::Enqueue(StateId start) {
+  if (enqueued_->count(start)) {
+    queue_->Update(start);
+  } else {
+    queue_->Enqueue(start);
+    enqueued_->insert(start);
+  }
+}
+
+template <class Arc, template <class> class Queue> inline
+typename Arc::StateId ReverseInsideAlgo<Arc, Queue>::Dequeue() {
+  StateId start = queue_->Head();
+  queue_->Dequeue();
+  enqueued_->erase(start);
+  ++n_dequeued_;
+  return start;
+}
+
+template <class Arc, template <class> class Queue> inline
+void ReverseInsideAlgo<Arc, Queue>::Relax(StateId start, StateId state, Weight weight) {
+  ItemId item = chart_->FindOrAdd(start, state);
+  Weight chart_weight = chart_->GetWeight(item);
+  weight = Plus(chart_weight, weight);
+  if (weight != chart_weight) {
+    chart_->SetWeight(item, weight);
+    Enqueue(start);
+  }
+}
+
 
 } // namespace pdt
 } // namespace fst
