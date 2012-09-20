@@ -287,7 +287,7 @@ class PdtNShortestPath {
   size_t n_enqueued_;
   PriorityQueue *heap_;
   PdtParenData<Arc> pdata_;
-  OutsideChart<Arc> out_chart_;
+  InsideOutsideChart<Arc> chart_;
   NspData theorems_;
 
   DISALLOW_COPY_AND_ASSIGN(PdtNShortestPath);
@@ -305,7 +305,8 @@ void PdtNShortestPath<Arc>::ClearFst(MutableFst<Arc> *ofst) {
 // each state when the input is treated as a plain FST.
 template <class Arc> inline
 void PdtNShortestPath<Arc>::PreComputeHeuristics() {
-  OutsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&out_chart_);
+  InsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&chart_);
+  OutsideAlgo<Arc>(*ifst_, parens_, &pdata_).FillChart(&chart_);
 }
 
 // A* search
@@ -364,10 +365,14 @@ void PdtNShortestPath<Arc>::EnqueueAxiom(StateId s) {
 
 template <class Arc> inline
 void PdtNShortestPath<Arc>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
-  pair<Weight, Weight> out = out_chart_.OutsideWeight(start, state);
+  ItemId chart_item = chart_.Find(start, state);
+  typename OutWeightOp<Weight>::OutWeight outside_weight =
+      chart_item == kNoItemId ?
+      OutWeightOp<Weight>::Zero() :
+      chart_.GetOutsideWeight(chart_item);
   Item it = {
     start, state, weight,
-    Times(out.first, Times(weight, out.second)),
+    OutWeightOp<Weight>::MiddleTimes(outside_weight, weight),
     parent
   };
   heap_->Insert(it);
