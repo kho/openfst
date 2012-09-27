@@ -42,15 +42,15 @@ struct PdtNShortestPathOptions {
 
 namespace pdt {
 template <class Arc>
-class OutsideHeuristics {
+class OutsideHeuristic {
  public:
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight InWeight;
   typedef typename Arc::Label Label;
   typedef typename OutWeightOp<InWeight>::OutWeight OutWeight;
 
-  OutsideHeuristics(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
-                    PdtParenData<Arc> *pdata) {
+  OutsideHeuristic(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
+                   PdtParenData<Arc> *pdata) {
     InsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
     OutsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
   }
@@ -69,14 +69,14 @@ class OutsideHeuristics {
 
 
 template <class Arc>
-class ReverseInsideHeuristics {
+class ReverseInsideHeuristic {
  public:
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight Weight;
   typedef typename Arc::Label Label;
 
-  ReverseInsideHeuristics(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
-                          PdtParenData<Arc> *pdata) :
+  ReverseInsideHeuristic(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
+                         PdtParenData<Arc> *pdata) :
       pdata_(pdata) {
     ReverseInsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
   }
@@ -106,8 +106,29 @@ class ReverseInsideHeuristics {
   PdtParenData<Arc> *pdata_;
 };
 
+template <class Arc>
+class ReverseDistance {
+ public:
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
+  typedef typename Arc::Label Label;
 
-template <class Arc, template <class> class Heuristics> class PdtNShortestPath;
+  ReverseDistance(const Fst<Arc> &fst, const vector<pair<Label, Label> > &parens,
+                  PdtParenData<Arc> *pdata) {
+    ReverseInsideAlgo<Arc>(fst, parens, pdata).FillChart(&chart_);
+  }
+
+  Weight Score(StateId state, StateId final, Weight weight) {
+    ItemId item = chart_.Find(state, final);
+    Weight dist = item == kNoItemId ? Weight::Zero() : chart_.GetWeight(item);
+    return Times(weight, dist);
+  }
+
+ private:
+  SpanWeightChart<Arc> chart_;
+};
+
+template <class Arc, template <class> class Heuristic> class PdtNShortestPath;
 
 template <class Arc>
 class PdtNShortestPathData {
@@ -270,7 +291,7 @@ void PdtNShortestPathData<Arc>::Traverse(const ItemParent &parent, vector<pair<L
   }
 }
 
-template <class Arc, template <class> class Heuristics>
+template <class Arc, template <class> class Heuristic>
 class PdtNShortestPath {
  public:
   PdtNShortestPath(const Fst<Arc> &ifst,
@@ -299,7 +320,7 @@ class PdtNShortestPath {
     if (ifst_->Start() == kNoStateId)
       return 0;
 
-    Heuristics<Arc> h(*ifst_, parens_, &pdata_);
+    Heuristic<Arc> h(*ifst_, parens_, &pdata_);
     heuristics_ = &h;
 
     DoSearch();
@@ -357,13 +378,13 @@ class PdtNShortestPath {
   PriorityQueue *heap_;
   PdtParenData<Arc> pdata_;
   NspData theorems_;
-  Heuristics<Arc> *heuristics_;
+  Heuristic<Arc> *heuristics_;
 
   DISALLOW_COPY_AND_ASSIGN(PdtNShortestPath);
 };
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::ClearFst(MutableFst<Arc> *ofst) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::ClearFst(MutableFst<Arc> *ofst) {
   ofst_ = ofst;
   ofst->DeleteStates();
   ofst->SetInputSymbols(ifst_->InputSymbols());
@@ -371,8 +392,8 @@ void PdtNShortestPath<Arc, Heuristics>::ClearFst(MutableFst<Arc> *ofst) {
 }
 
 // A* search
-template <class Arc, template <class> class Heuristics>
-void PdtNShortestPath<Arc, Heuristics>::DoSearch() {
+template <class Arc, template <class> class Heuristic>
+void PdtNShortestPath<Arc, Heuristic>::DoSearch() {
   PriorityQueue q;
   heap_ = &q;
 
@@ -402,8 +423,8 @@ void PdtNShortestPath<Arc, Heuristics>::DoSearch() {
 
 // Enqueues all the axioms of the form `p \leadsto p: 1` where
 // either p is the start or it has an incoming arc with open paren.
-template <class Arc, template <class> class Heuristics>
-void PdtNShortestPath<Arc, Heuristics>::EnqueueAxioms() {
+template <class Arc, template <class> class Heuristic>
+void PdtNShortestPath<Arc, Heuristic>::EnqueueAxioms() {
   typedef unordered_set<StateId> StateSet;
   StateSet axioms;
   axioms.insert(ifst_->Start());
@@ -420,13 +441,13 @@ void PdtNShortestPath<Arc, Heuristics>::EnqueueAxioms() {
   // EnqueueAxiom(ifst_->Start());
 }
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::EnqueueAxiom(StateId s) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::EnqueueAxiom(StateId s) {
   Enqueue(s, s, Weight::One(), ItemParent::Axiom());
 }
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::Enqueue(StateId start, StateId state, Weight weight, ItemParent parent) {
   Item it = {
     start, state, weight,
     heuristics_->Score(start, state, weight),
@@ -440,8 +461,8 @@ void PdtNShortestPath<Arc, Heuristics>::Enqueue(StateId start, StateId state, We
 // transitions are kept; if `opts_.keep_parentheses' is false,
 // parentheses will also become epsilon (this actually happens in
 // Complete()).
-template <class Arc, template <class> class Heuristics>
-void PdtNShortestPath<Arc, Heuristics>::OutputPath(const Item &it) {
+template <class Arc, template <class> class Heuristic>
+void PdtNShortestPath<Arc, Heuristic>::OutputPath(const Item &it) {
   vector<pair<Label, Label> > path_label;
   theorems_.GetPathLabels(it, &path_label);
   if (path_label.empty()) {
@@ -465,8 +486,8 @@ void PdtNShortestPath<Arc, Heuristics>::OutputPath(const Item &it) {
   ofst_->SetFinal(src, it.weight);
 }
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::ProcArc(const Item &item, ItemId item_id, const Arc &arc) {
   Label open_paren = pdata_.OpenParenId(arc.ilabel);
   if (open_paren == kNoLabel)           // lexical arc
     Scan(item, item_id, arc);
@@ -477,25 +498,25 @@ void PdtNShortestPath<Arc, Heuristics>::ProcArc(const Item &item, ItemId item_id
     TryCompleteAsItem2(item, item_id, open_paren, arc);
 }
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::Scan(const Item &item, ItemId item_id, const Arc &arc) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::Scan(const Item &item, ItemId item_id, const Arc &arc) {
   Enqueue(item.start, arc.nextstate,
           Times(item.weight, arc.weight),
           ItemParent::Scan(item_id, arc));
 }
 
-template <class Arc, template <class> class Heuristics> inline
-void PdtNShortestPath<Arc, Heuristics>::Complete(const Item &item1, ItemId item1_id, const Arc &arc1,
-                                     const Item &item2, ItemId item2_id, const Arc &arc2) {
+template <class Arc, template <class> class Heuristic> inline
+void PdtNShortestPath<Arc, Heuristic>::Complete(const Item &item1, ItemId item1_id, const Arc &arc1,
+                                                const Item &item2, ItemId item2_id, const Arc &arc2) {
   Enqueue(item1.start, arc2.nextstate,
           Times(item1.weight, Times(arc1.weight, Times (item2.weight, arc2.weight))),
           ItemParent::Complete(item1_id, arc1, item2_id, arc2, opts_.keep_parentheses));
 }
 
 // Rule (C) as it, arc, ?, ?? |- (it.start, ??.nextstate)
-template <class Arc, template <class> class Heuristics>
-void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem1(const Item &item1, ItemId item1_id,
-                                               Label open_paren, const Arc &arc1) {
+template <class Arc, template <class> class Heuristic>
+void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem1(const Item &item1, ItemId item1_id,
+                                                          Label open_paren, const Arc &arc1) {
   StateId open_dest = arc1.nextstate;
 
   for (typename PdtParenData<Arc>::Iterator close_it = pdata_.FindClose(open_paren, open_dest);
@@ -513,9 +534,9 @@ void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem1(const Item &item1, It
 }
 
 // Rule (C) as ?, ??, it, arc |- (?.start, arc.nextstate)
-template <class Arc, template <class> class Heuristics>
-void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem2(const Item &item2, ItemId item2_id,
-                                               Label open_paren, const Arc &arc2) {
+template <class Arc, template <class> class Heuristic>
+void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem2(const Item &item2, ItemId item2_id,
+                                                          Label open_paren, const Arc &arc2) {
   StateId close_src = item2.state;
 
   for (typename PdtParenData<Arc>::Iterator open_it = pdata_.FindOpen(open_paren, close_src);
@@ -532,26 +553,430 @@ void PdtNShortestPath<Arc, Heuristics>::TryCompleteAsItem2(const Item &item2, It
   }
 }
 
+template <class Arc>
+class NewNShortestPath {
+ public:
+  typedef typename Arc::StateId StateId;
+  typedef typename Arc::Weight Weight;
+  typedef typename Arc::Label Label;
+
+  NewNShortestPath(const Fst<Arc> &ifst, const vector<pair<Label, Label> > &parens,
+                   const PdtNShortestPathOptions &opts) :
+      ifst_(ifst.Copy()), parens_(parens), opts_(opts) {}
+
+  // Extracts n shortest paths into `ofst` following the given options
+  // at construction and returns the number of paths found.
+  size_t NShortestPath(MutableFst<Arc> *ofst) {
+    return NShortestPathImpl(ofst);
+  }
+
+ private:
+  //
+  // Back pointer between items.
+  //
+  struct Parent {
+    Parent() :
+        item1(kNoItemId), item2(kNoItemId) {}
+
+    Parent(ItemId item, const Arc &arc) :
+        item1(item), item2(kNoItemId), arc1(arc) {}
+
+    Parent(ItemId it1, const Arc &ar1, ItemId it2, const Arc &ar2):
+        item1(it1), item2(it2), arc1(ar1), arc2(ar2) {}
+
+    static Parent Root() {
+      return Parent();
+    }
+
+    static Parent LexParent(ItemId item, const Arc &arc) {
+      return Parent(item, arc);
+    }
+
+    static Parent ParParent(ItemId item1, const Arc &arc1, ItemId item2, const Arc &arc2) {
+      return Parent(item1, arc1, item2, arc2);
+    }
+
+    bool IsRoot() const {
+      return item1 == kNoItemId && item2 == kNoItemId;
+    }
+
+    bool IsLexParent() const {
+      return item1 != kNoItemId && item2 == kNoItemId;
+    }
+
+    bool IsParParent() const {
+      return item1 != kNoItemId && item2 != kNoItemId;
+    }
+
+    ItemId item1, item2;
+    Arc arc1, arc2;
+  };
+
+  //
+  // A proof item, consists of the span of the balanced path, the
+  // weight, the estimated priority and its parent. In addition, goal
+  // items are linked with `next`.
+  //
+  struct Item {
+    StateId start, state;
+    Weight weight, priority;
+    Parent parent;
+    // Provides link to next item with same (start, state),
+    // when (start, state) is goal of some sub-prover, it stores
+    //
+    // - It is the item's ItemId if this is the last goal
+    // item the prover has found so far and the prover is not done
+    // yet.
+    //
+    // - It is kNoItemId if this the last goal item the prover has
+    // found and the prover has finished.
+    //
+    // - Otherwise, it is the ItemId of next goal item.
+    //
+    // When (start, state) is not a goal, it is always kNoItemId.
+    //
+    // It is the prover's job to update the field.
+    ItemId next;
+
+    Item(StateId p, StateId q, Weight w, Weight h, Parent b, ItemId n = kNoItemId) :
+        start(p), state(q), weight(w), priority(h), parent(b), next(n) {}
+  };
+
+  //
+  // The collection of items
+  //
+  class Chart {
+   public:
+    ItemId AddItem(StateId start, StateId state,
+                   Weight weight, Weight priority,
+                   Parent parent) {
+      ItemId id = items_.size();
+      items_.push_back(Item(start, state, weight, priority, parent));
+      return id;
+    }
+
+    const Item &GetItem(ItemId id) const {
+      return items_[id];
+    }
+
+    void SetNext(ItemId id, ItemId next) {
+      items_[id].next = next;
+    }
+
+    void ExtractPath(ItemId id, MutableFst<Arc> *ofst) {
+      vector<const Arc *> l;
+      Traverse(id, &l);
+      StateId p = ofst->Start();
+      if (p == kNoStateId) {
+        p = ofst->AddState();
+        ofst->SetStart(p);
+      }
+      for (size_t i = 0; i < l.size(); ++i) {
+        const Arc &arc = *l[i];
+        StateId q = ofst->AddState();
+        ofst->AddArc(p, Arc(arc.ilabel, arc.olabel, Weight::One(), q));
+        p = q;
+      }
+      ofst->SetFinal(p, GetItem(id).weight);
+    }
+
+   private:
+    void Traverse(ItemId id, vector<const Arc *> *output) {
+      const Parent &parent = GetItem(id).parent;
+      if (parent.IsLexParent()) {
+        Traverse(parent.item1, output);
+        output->push_back(&parent.arc1);
+      } else if (parent.IsParParent()) {
+        Traverse(parent.item1, output);
+        // output->push_back(&parent.arc1);
+        Traverse(parent.item2, output);
+        // output->push_back(&parent.arc2);
+      }
+    }
+
+    vector<Item> items_;
+  };
+
+  //
+  // The collection of data used in provers.
+  //
+  struct Closure {
+    const Fst<Arc> *fst;
+    PdtParenData<Arc> pdata;
+    ReverseDistance<Arc> heuristic;
+    Chart chart;
+
+    // Note: we assume that after construction pdata has precise
+    // knowledge of open/close-paren pairs.
+    Closure(const Fst<Arc> &f, const vector<pair<Label, Label> > parens) :
+        fst(f.Copy()), pdata(parens), heuristic(f, parens, &pdata) {}
+  };
+
+  //
+  // Rank ItemId's by their priority
+  //
+  struct ItemCompare {
+    ItemCompare(Closure *data) :
+        data_(data) {}
+
+    bool operator() (ItemId id1, ItemId id2) {
+      Weight p1 = data_->chart.GetItem(id1).priority,
+          p2 = data_->chart.GetItem(id2).priority;
+      return Plus(p1, p2) == p1;
+    }
+
+    Closure *data_;
+  };
+
+  class ProverPool;
+
+  //
+  // The prover that incrementally finds n shortest paths between
+  // `start` and `final`.
+  //
+  class Prover {
+   public:
+    Prover(StateId start, StateId final, Closure *data, ProverPool *pool) :
+        start_(start), final_(final), data_(data), pool_(pool), queue_(ItemCompare(data)),
+        head_found_(false), head_(kNoItemId), n_dequeued_(0) {
+      Enqueue(start_, Weight::One(), Parent::Root());
+    }
+
+    // Finds the next accepting path; returns its Itemid if found,
+    // kNoItemId otherwise.
+    ItemId Advance(ItemId last_goal) {
+      ItemId this_goal = FindNext();
+      if (last_goal != kNoItemId)
+        data_->chart.SetNext(last_goal, this_goal);
+      if (this_goal != kNoItemId)
+        data_->chart.SetNext(this_goal, this_goal);
+      return this_goal;
+    }
+
+    // Returns the ItemId representing the shortest accepting path.
+    ItemId Head() {
+      if (!head_found_) {
+        head_ = Advance(kNoItemId);
+        head_found_ = true;
+      }
+      return head_;
+    }
+
+   private:
+    typedef Heap<ItemId, ItemCompare, false> PriorityQueue;
+
+    ItemId FindNext();
+    void ProcArc(ItemId, const Arc &);
+    void Scan(ItemId, const Arc &);
+    void Complete(ItemId, const Arc &, ItemId, const Arc &);
+    void Enqueue(StateId, Weight, Parent);
+    ItemId Dequeue();
+
+    StateId start_, final_;
+    Closure *data_;
+    ProverPool *pool_;
+    PriorityQueue queue_;
+    bool head_found_;
+    ItemId head_;
+    size_t n_dequeued_;
+  };
+
+  //
+  // A collection of provers; other provers query this to get a hold
+  // of other provers in order to get subgraph paths.
+  //
+  class ProverPool {
+   public:
+    ProverPool(Closure *data) :
+        data_(data) {}
+
+    ~ProverPool() {
+      for (typename unordered_map<Span<Arc>, Prover *>::iterator it = pool_.begin();
+           it != pool_.end(); ++it)
+        delete it->second;
+    }
+
+    Prover *GetProver(StateId start, StateId final) {
+      Span<Arc> sp(start, final);
+      typename unordered_map<Span<Arc>, Prover *>::iterator it = pool_.find(sp);
+      Prover *ret = NULL;
+      if (it == pool_.end()) {
+        ret = new Prover(start, final, data_, this);
+        pool_[sp] = ret;
+      } else {
+        ret = it->second;
+      }
+      return ret;
+    }
+
+   private:
+    Closure *data_;
+    unordered_map<Span<Arc>, Prover *> pool_;
+  };
+
+
+  size_t NShortestPathImpl(MutableFst<Arc> *ofst) {
+    ofst->DeleteStates();
+    ofst->SetInputSymbols(ifst_->InputSymbols());
+    ofst->SetOutputSymbols(ifst_->OutputSymbols());
+
+    if (ifst_->Start() == kNoStateId)
+      return 0;
+
+    size_t n_found = 0;
+    Closure data(*ifst_, parens_);
+    ProverPool provers(&data);
+    Prover *top = provers.GetProver(ifst_->Start(), kSuperfinal);
+    ItemId it = kNoItemId;
+    while (n_found < opts_.nshortest) {
+      // Prove next path
+      it = top->Advance(it);
+      if (it == kNoItemId)
+        break;
+      ++n_found;
+      // Output path
+      data.chart.ExtractPath(it, ofst);
+    }
+
+    return n_found;
+  }
+
+  const Fst<Arc> *ifst_;
+  const vector<pair<Label, Label> > &parens_;
+  PdtNShortestPathOptions opts_;
+};
+
+
+template <class Arc> inline
+ItemId NewNShortestPath<Arc>::Prover::FindNext() {
+  ItemId ret = kNoItemId;
+  while (!queue_.Empty()) {
+    ItemId id = Dequeue();
+    StateId state = data_->chart.GetItem(id).state;
+    if (state != kSuperfinal) {
+      Weight rho = data_->fst->Final(state);
+      if (rho != Weight::Zero())
+        ProcArc(id, Arc(0, 0, rho, kSuperfinal));
+      // Expand this item
+      for (ArcIterator<Fst<Arc> > aiter(*data_->fst, state);
+           !aiter.Done(); aiter.Next())
+        ProcArc(id, aiter.Value());
+    }
+    if (state == final_) {
+      // We have found a goal
+      ret = id;
+      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): hit " << ret;
+      break;
+    }
+  }
+  return ret;
+}
+
+template <class Arc> inline
+void NewNShortestPath<Arc>::Prover::ProcArc(ItemId id, const Arc &arc) {
+  Label open_paren = data_->pdata.OpenParenId(arc.ilabel);
+  // VLOG(0) << "Prover(" << start_ << "," << final_ << "): ProcArc(" << id << "," << arc.nextstate << ")" << open_paren;
+  if (open_paren == kNoLabel) {
+    // lexical arc
+    Scan(id, arc);
+  } else if (open_paren == arc.ilabel) {
+    // open paren
+    ItemId id1 = id;
+    StateId open_dest = arc.nextstate;
+    for (typename PdtParenData<Arc>::Iterator close_it =
+             data_->pdata.FindClose(open_paren, open_dest);
+         !close_it.Done(); close_it.Next()) {
+      const FullArc<Arc> &fa = close_it.Value();
+      StateId close_src = fa.state;
+      ItemId id2 = pool_->GetProver(open_dest, close_src)->Head();
+      Complete(id1, arc, id2, fa.arc);
+    }
+  }
+}
+
+template <class Arc> inline
+void NewNShortestPath<Arc>::Prover::Scan(ItemId id, const Arc &arc) {
+  Enqueue(arc.nextstate,
+          Times(data_->chart.GetItem(id).weight, arc.weight),
+          Parent::LexParent(id, arc));
+}
+
+template <class Arc> inline
+void NewNShortestPath<Arc>::Prover::Complete(ItemId id1, const Arc &arc1, ItemId id2, const Arc &arc2) {
+  Enqueue(arc2.nextstate,
+          Times(data_->chart.GetItem(id1).weight,
+                Times(arc1.weight,
+                      Times(data_->chart.GetItem(id2).weight,
+                            arc2.weight))),
+          Parent::ParParent(id1, arc1, id2, arc2));
+}
+
+template <class Arc> inline
+void NewNShortestPath<Arc>::Prover::Enqueue(StateId state, Weight weight, Parent parent) {
+  Weight priority = data_->heuristic.Score(state, final_, weight);
+  if (priority != Weight::Zero()) {
+    ItemId id = data_->chart.AddItem(start_, state,
+                                     weight, priority,
+                                     parent);
+    // VLOG(0) << "Prover(" << start_ << "," << final_ << "): enqueue " << state << " as " << id << " via " << parent.item1 << " + " << parent.item2 << " weight " << weight << " priority " << priority;
+    queue_.Insert(id);
+  }
+}
+
+template <class Arc> inline
+ItemId NewNShortestPath<Arc>::Prover::Dequeue() {
+  ItemId id = queue_.Pop();
+  // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue " << id << " weight " << data_->chart.GetItem(id).weight
+  //         << " priority " << data_->chart.GetItem(id).priority;
+  Parent parent = data_->chart.GetItem(id).parent;
+  if (parent.IsParParent()) {
+    ItemId id2 = parent.item2;
+    const Item &item2 = data_->chart.GetItem(id2);
+    StateId start2 = item2.start, state2 = item2.state;
+    ItemId next2 = item2.next;
+    if (next2 == id2)              // last item proved; not necessarily last item of all
+      pool_->GetProver(start2, state2)->Advance(id2);
+    if (next2 != kNoItemId) {
+      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue triggered " << start2 << "~>" << state2 << " complete " << next2;
+      Complete(parent.item1, parent.arc1, next2, parent.arc2);
+    }
+  }
+  ++n_dequeued_;
+  if (n_dequeued_ % 10000 == 0)
+    VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeued " << n_dequeued_;
+  return id;
+}
+
 } // namespace pdt
 
-template <class Arc, template <class> class Heuristics>
+template <class Arc, template <class> class Heuristic>
 size_t NShortestPath(const Fst<Arc> &ifst,
                      const vector<pair<typename Arc::Label,
                      typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      const PdtNShortestPathOptions &opts) {
-  pdt::PdtNShortestPath<Arc, Heuristics> pnsp(ifst, parens, opts);
+  pdt::PdtNShortestPath<Arc, Heuristic> pnsp(ifst, parens, opts);
   return pnsp.NShortestPath(ofst);
 }
 
+// template <class Arc>
+// size_t NShortestPath(const Fst<Arc> &ifst,
+//                      const vector<pair<typename Arc::Label,
+//                      typename Arc::Label> > &parens,
+//                      MutableFst<Arc> *ofst,
+//                      size_t n) {
+//   return NShortestPath<Arc, pdt::OutsideHeuristic>(ifst, parens, ofst, PdtNShortestPathOptions(n));
+// }
+
 template <class Arc>
 size_t NShortestPath(const Fst<Arc> &ifst,
-                     const vector<pair<typename Arc::Label,
-                     typename Arc::Label> > &parens,
+                     const vector<pair<typename Arc::Label, typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      size_t n) {
-  return NShortestPath<Arc, pdt::OutsideHeuristics>(ifst, parens, ofst, PdtNShortestPathOptions(n));
+  pdt::NewNShortestPath<Arc> solver(ifst,parens, PdtNShortestPathOptions(n));
+  return solver.NShortestPath(ofst);
 }
+
 } // namespace fst
 
 #endif  // FST_EXTENSIONS_PDT_N_SHORTEST_PATH_H__
