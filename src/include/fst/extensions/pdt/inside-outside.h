@@ -42,6 +42,55 @@ using std::pair;
 #include <vector>
 using std::vector;
 
+#include <ctime>
+using std::clock;
+using std::clock_t;
+class Timer {
+ public:
+  typedef int Id;
+
+  static Timer &Get(Id id) {
+    unordered_map<Id, Timer>::iterator it = pool_.find(id);
+    if (it != pool_.end()) {
+      return it->second;
+    } else {
+      return pool_.insert(make_pair(id, Timer(id))).first->second;
+    }
+  }
+
+  void Start() {
+    last_ = clock();
+  }
+
+  void Record(const string &message) {
+    clock_t stamp = clock();
+    records_.push_back(make_pair(message, stamp - last_));
+    last_ = clock();
+  }
+
+ private:
+  Timer(Id id) : id_(id) {}
+
+ public:
+  ~Timer() {
+    if (!records_.empty()) {
+      VLOG(0) << "Timer " << id_;
+      for (size_t i = 0; i < records_.size(); ++i) {
+        const pair<string, clock_t> d = records_[i];
+        VLOG(0) << d.first << " " << static_cast<double>(d.second) / CLOCKS_PER_SEC * 1000 << "ms";
+      }
+    }
+  }
+
+ private:
+  static unordered_map<Id, Timer> pool_;
+  Id id_;
+  clock_t last_;
+  vector<pair<string, clock_t> > records_;
+};
+
+unordered_map<Timer::Id, Timer> Timer::pool_;
+
 namespace fst {
 namespace pdt {
 // A Span from start to state; used as search states
@@ -273,6 +322,7 @@ class InsideAlgo {
   }
 
   void FillChart(InsideOutsideChart<Arc> *chart) {
+    Timer::Get(0).Start();
     chart_ = chart;
     chart_->Clear();
     n_dequeued_ = 0;
@@ -291,9 +341,11 @@ class InsideAlgo {
     pdata_->Finalize();
 
     VLOG(0) << "Inside: expansion: " << n_dequeued_
-            << " chart: " << chart_->Size();
+            << " chart: " << chart_->Size()
+            << " weight: " << chart_->GetInsideWeight(chart_->Find(ifst_->Start(), kSuperfinal));
 
     chart_ = NULL;
+    Timer::Get(0).Record("Inside");
   }
 
  private:
@@ -468,6 +520,7 @@ class OutsideAlgo {
 
   // chart must have been filled by InsideAlgo
   void FillChart(InsideOutsideChart<Arc> *chart) {
+    Timer::Get(0).Start();
     chart_ = chart;
     n_dequeued_ = 0;
 
@@ -509,6 +562,7 @@ class OutsideAlgo {
 
     chart_ = NULL;
     queue_ = NULL;
+    Timer::Get(0).Record("Outside");
   }
 
  private:
@@ -555,6 +609,7 @@ void OutsideAlgo<Arc, Queue>::BuildReverseArcIndex() {
 template <class Arc, template <class> class Queue> inline
 void OutsideAlgo<Arc, Queue>::Expand(ItemId item) {
   Span<Arc> span = chart_->GetSpan(item);
+  // VLOG(0) << "Expand " << span.start << "~>" << span.state << "@" << item << " " << chart_->GetOutsideWeight(item);
   for (typename ArcIndex::const_iterator it = arcs_.find(span.state);
        it != arcs_.end() && it->first == span.state; ++it) {
     const FullArc<Arc> &fa = it->second;
@@ -574,8 +629,10 @@ void OutsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state, ItemId item,
 template <class Arc, template <class> class Queue> inline
 void OutsideAlgo<Arc, Queue>::Back(StateId start, StateId state, ItemId outer, const FullArc<Arc> &fa) {
   ItemId inner = chart_->Find(start, fa.state);
-  if (inner != kNoItemId)
+  if (inner != kNoItemId) {
+    // VLOG(0) << "Back " << start << "~>" << fa.state << " via " << start << "~>" << (fa.arc.nextstate == state ? state : 999999) << " " << fa.arc.weight;
     Relax(inner, OutWeightOp<InWeight>::RightTimes(chart_->GetOutsideWeight(outer), fa.arc.weight));
+  }
 }
 
 template <class Arc, template <class> class Queue> inline
@@ -591,9 +648,13 @@ void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId outer, c
     if (inner1 != kNoItemId && inner2 != kNoItemId) {
       InWeight weight1 = chart_->GetInsideWeight(inner1), weight2 = chart_->GetInsideWeight(inner2);
 
+      // VLOG(0) << "Down " << q1 << "~>" << q2 << " via " << start << "~>" << state;
+      // VLOG(0) << "Down " << q3 << "~>" << q4 << " via " << start << "~>" << state;
+
       Relax(inner1,
             OutWeightOp<InWeight>::RightTimes(chart_->GetOutsideWeight(outer),
-                                              Times(weight2, close_fa.arc.weight)));
+                                              Times(open_fa.arc.weight,
+                                                    Times(weight2, close_fa.arc.weight))));
       Relax(inner2,
             OutWeightOp<InWeight>::LeftRightTimes(chart_->GetOutsideWeight(outer),
                                                   Times(weight1, open_fa.arc.weight),
@@ -706,6 +767,7 @@ class ReverseInsideAlgo {
   }
 
   void FillChart(SpanWeightChart<Arc> *chart) {
+    Timer::Get(0).Start();
     chart_ = chart;
     chart_->Clear();
     n_dequeued_ = 0;
@@ -728,9 +790,11 @@ class ReverseInsideAlgo {
     pdata_->Finalize();
 
     VLOG(0) << "ReverseInside: expansion: " << n_dequeued_
-            << " chart: " << chart_->Size();
+            << " chart: " << chart_->Size()
+            << " weight: " << chart_->GetWeight(chart_->Find(ifst_->Start(), kSuperfinal));
 
     chart_ = NULL;
+    Timer::Get(0).Record("ReverseInside");
   }
 
  private:
