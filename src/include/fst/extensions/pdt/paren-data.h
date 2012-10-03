@@ -69,12 +69,13 @@ class PdtParenData {
   typedef typename Arc::Label Label;
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight Weight;
+  typedef unordered_map<Label, Label> ParenIdMap;
   typedef const FullArc<Arc> *FullArcPtr;
   typedef unordered_set<FullArc<Arc> > FullArcSet;
   typedef unordered_set<FullArcPtr> FullArcPtrSet;
   typedef unordered_multimap<ParenState<Arc>, FullArcPtr, typename ParenState<Arc>::Hash> ParenArcMap;
   typedef unordered_map<ParenState<Arc>, FullArcPtrSet, typename ParenState<Arc>::Hash> SureMap;
-  typedef unordered_multimap<StateId, StateId> SubFinalMap;
+  // typedef unordered_multimap<StateId, StateId> SubFinalMap;
 
  public:
   // Iterator through full arcs
@@ -102,30 +103,30 @@ class PdtParenData {
     friend class PdtParenData;
   };
 
-  // Iterator through sub-final states
-  class SubFinalIterator {
-   public:
-    bool Done() const {
-      return at_ == end_;
-    }
+  // // Iterator through sub-final states
+  // class SubFinalIterator {
+  //  public:
+  //   bool Done() const {
+  //     return at_ == end_;
+  //   }
 
-    void Next() {
-      ++at_;
-    }
+  //   void Next() {
+  //     ++at_;
+  //   }
 
-    StateId Value() const {
-      return at_->second;
-    }
+  //   StateId Value() const {
+  //     return at_->second;
+  //   }
 
-   private:
-    typedef typename SubFinalMap::const_iterator MapIter;
-    SubFinalIterator() : at_(), end_() {}
-    SubFinalIterator(MapIter begin, MapIter end) :
-        at_(begin), end_(end) {}
+  //  private:
+  //   typedef typename SubFinalMap::const_iterator MapIter;
+  //   SubFinalIterator() : at_(), end_() {}
+  //   SubFinalIterator(MapIter begin, MapIter end) :
+  //       at_(begin), end_(end) {}
 
-    MapIter at_, end_;
-    template <class A> friend class PdtParenData;
-  };
+  //   MapIter at_, end_;
+  //   template <class A> friend class PdtParenData;
+  // };
 
   // The constructor only assigns paren ids
   PdtParenData(const vector<pair<Label, Label> > &parens) :
@@ -143,7 +144,7 @@ class PdtParenData {
   // - A close paren, use (label != kNoLabel && OpenParenId(label) != kNoLabel && OpenParenId(label) != label);
   // - A lexical paren, use (label != kNoLabel && OpenParenId(label) == label).
   Label OpenParenId(Label l) const {
-    typename unordered_map<Label, Label>::const_iterator it = open_paren_.find(l);
+    typename ParenIdMap::const_iterator it = open_paren_.find(l);
     return it == open_paren_.end() ? kNoLabel : it->second;
   }
 
@@ -173,8 +174,7 @@ class PdtParenData {
     finalized_ = true;
   }
 
-  void ReportOpenParen(StateId open_src, const Arc &open_arc, StateId close_src) {
-    Label open_paren = OpenParenId(open_arc.ilabel);
+  void ReportOpenParen(StateId open_src, const Arc &open_arc, StateId close_src, Label open_paren) {
     FullArcPtr open_fa_ptr = FindOrAddArc(open_src, open_arc);
     StateId open_dest = open_arc.nextstate;
     for (typename ParenArcMap::const_iterator it = close_arcs_.find(ParenState<Arc>(open_paren, close_src));
@@ -185,8 +185,7 @@ class PdtParenData {
     }
   }
 
-  void ReportCloseParen(StateId open_dest, StateId close_src, const Arc &close_arc) {
-    Label open_paren = OpenParenId(close_arc.ilabel);
+  void ReportCloseParen(StateId open_dest, Label open_paren, StateId close_src, const Arc &close_arc) {
     FullArcPtr close_fa_ptr = FindOrAddArc(close_src, close_arc);
     for (typename ParenArcMap::const_iterator it = open_arcs_.find(ParenState<Arc>(open_paren, open_dest));
          it != open_arcs_.end() && it->first == ParenState<Arc>(open_paren, open_dest); ++it) {
@@ -208,15 +207,15 @@ class PdtParenData {
     return Find(open_paren, open_dest, close_map_);
   }
 
-  void ReportSubFinal(StateId substart, StateId subfinal) {
-    subfinals_.insert(make_pair(substart, subfinal));
-  }
+  // void ReportSubFinal(StateId substart, StateId subfinal) {
+  //   subfinals_.insert(make_pair(substart, subfinal));
+  // }
 
-  SubFinalIterator FindSubFinal(StateId substart) {
-    pair<typename SubFinalMap::const_iterator, typename SubFinalMap::const_iterator> p =
-        subfinals_.equal_range(substart);
-    return SubFinalIterator(p.first, p.second);
-  }
+  // SubFinalIterator FindSubFinal(StateId substart) {
+  //   pair<typename SubFinalMap::const_iterator, typename SubFinalMap::const_iterator> p =
+  //       subfinals_.equal_range(substart);
+  //   return SubFinalIterator(p.first, p.second);
+  // }
 
  private:
   // Maps each paren label to its open paren label
@@ -240,11 +239,11 @@ class PdtParenData {
   }
 
   bool finalized_;
-  unordered_map<Label, Label> open_paren_;
+  ParenIdMap open_paren_;
   SureMap open_map_, close_map_;
   ParenArcMap open_arcs_, close_arcs_;
   FullArcSet full_arcs_;
-  SubFinalMap subfinals_;
+  // SubFinalMap subfinals_;
 };
 
 } // namespace pdt

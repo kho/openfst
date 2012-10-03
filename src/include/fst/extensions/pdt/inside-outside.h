@@ -222,7 +222,7 @@ class InsideOutsideChart {
         span(kNoStateId, kNoStateId),
         in_weight(InWeight::Zero()),
         out_weight(OutWeightOp<InWeight>::Zero()) {}
-    Item(StateId p, StateId q):
+    Item(StateId p, StateId q) :
         span(p, q),
         in_weight(InWeight::Zero()),
         out_weight(OutWeightOp<InWeight>::Zero()) {}
@@ -418,8 +418,8 @@ void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
     // all inside items from arc.nextstate is proved
     TryCompleteAsItem1(start, state, item, open_paren, arc);
   } else {               // close paren
-    pdata_->ReportCloseParen(start, state, arc);
-    pdata_->ReportSubFinal(start, state);
+    pdata_->ReportCloseParen(start, open_paren, state, arc);
+    // pdata_->ReportSubFinal(start, state);
   }
 }
 
@@ -781,7 +781,7 @@ class ReverseInsideAlgo {
 
     pdata_->Prepare(*ifst_);
 
-    pdata_->ReportSubFinal(ifst_->Start(), kSuperfinal);
+    // pdata_->ReportSubFinal(ifst_->Start(), kSuperfinal);
 
     GetDistance(kSuperfinal);
 
@@ -885,8 +885,8 @@ void ReverseInsideAlgo<Arc, Queue>::ProcArc(StateId start, const Arc &arc, ItemI
   if (open_paren == kNoLabel) {     // lexical arc
     Scan(start, arc, item, state);
   } else if (open_paren == arc.ilabel) { // open paren
-    pdata_->ReportOpenParen(start, arc, state);
-    pdata_->ReportSubFinal(start, state);
+    pdata_->ReportOpenParen(start, arc, state, open_paren);
+    // pdata_->ReportSubFinal(start, state);
   } else {                              // close paren
     GetDistance(start);
     // At this point all relevant open paren is known to pdata_ and
