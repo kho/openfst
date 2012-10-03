@@ -122,6 +122,8 @@ namespace pdt {
 // Id to chart items
 typedef int ItemId;
 const ItemId kNoItemId = -1;
+// A promise to an proveable item
+const ItemId kPromiseItem = -2;
 
 // A hallucinated "final" state to which every real final state
 // points; then the final state weight can be represented as an arc,

@@ -586,8 +586,11 @@ class NewNShortestPath {
     Parent(ItemId item, const Arc &arc) :
         item1(item), item2(kNoItemId), arc1(arc) {}
 
-    Parent(ItemId it1, const Arc &ar1, ItemId it2, const Arc &ar2):
+    Parent(ItemId it1, const Arc &ar1, ItemId it2, const Arc &ar2) :
         item1(it1), item2(it2), arc1(ar1), arc2(ar2) {}
+
+    Parent(ItemId it1, const Arc &ar1, const Arc &ar2, StateId st) :
+        item1(it1), item2(kPromiseItem), arc1(ar1), arc2(ar2), src2(st) {}
 
     static Parent Root() {
       return Parent();
@@ -601,6 +604,10 @@ class NewNShortestPath {
       return Parent(item1, arc1, item2, arc2);
     }
 
+    static Parent PromiseParent(ItemId item1, const Arc &arc1, StateId src2, const Arc &arc2) {
+      return Parent(item1, arc1, arc2, src2);
+    }
+
     bool IsRoot() const {
       return item1 == kNoItemId && item2 == kNoItemId;
     }
@@ -610,11 +617,16 @@ class NewNShortestPath {
     }
 
     bool IsParParent() const {
-      return item1 != kNoItemId && item2 != kNoItemId;
+      return item1 != kNoItemId && item2 != kNoItemId && item2 != kPromiseItem;
+    }
+
+    bool IsPromiseParent() const {
+      return item1 != kNoItemId && item2 == kPromiseItem;
     }
 
     ItemId item1, item2;
     Arc arc1, arc2;
+    StateId src2;
   };
 
   //
@@ -666,6 +678,10 @@ class NewNShortestPath {
 
     void SetNext(ItemId id, ItemId next) {
       items_[id].next = next;
+    }
+
+    void ForcePromise(ItemId id, ItemId id2) {
+      items_[id].parent.item2 = id2;
     }
 
     void ExtractPath(ItemId id, MutableFst<Arc> *ofst) {
@@ -775,6 +791,7 @@ class NewNShortestPath {
     ItemId FindNext();
     void ProcArc(ItemId, const Arc &);
     void Scan(ItemId, const Arc &);
+    void Promise(ItemId, const Arc &, StateId, const Arc &);
     void Complete(ItemId, const Arc &, ItemId, const Arc &);
     void Enqueue(StateId, Weight, Parent);
     ItemId Dequeue();
@@ -875,7 +892,7 @@ ItemId NewNShortestPath<Arc>::Prover::FindNext() {
     if (state == final_) {
       // We have found a goal
       ret = id;
-      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): hit " << state << "@" << ret << " weight " << data_->chart.GetItem(id).weight;
+      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): hit " << state << " as item " << ret << " weight " << data_->chart.GetItem(id).weight;
       break;
     }
   }
@@ -897,9 +914,11 @@ void NewNShortestPath<Arc>::Prover::ProcArc(ItemId id, const Arc &arc) {
              data_->pdata.FindClose(open_paren, open_dest);
          !close_it.Done(); close_it.Next()) {
       const FullArc<Arc> &fa = close_it.Value();
-      StateId close_src = fa.state;
-      ItemId id2 = pool_->GetProver(open_dest, close_src)->Head();
-      Complete(id1, arc, id2, fa.arc);
+      Promise(id1, arc, fa.state, fa.arc);
+    //   StateId close_src = fa.state;
+    //   Promise(id1, arc, fa)
+    //   ItemId id2 = pool_->GetProver(open_dest, close_src)->Head();
+    //   Complete(id1, arc, id2, fa.arc);
     }
   }
 }
@@ -909,6 +928,18 @@ void NewNShortestPath<Arc>::Prover::Scan(ItemId id, const Arc &arc) {
   Enqueue(arc.nextstate,
           Times(data_->chart.GetItem(id).weight, arc.weight),
           Parent::LexParent(id, arc));
+}
+
+template <class Arc> inline
+void NewNShortestPath<Arc>::Prover::Promise(ItemId id1, const Arc &open_arc,
+                                            StateId close_src, const Arc &close_arc) {
+  StateId open_dest = open_arc.nextstate;
+  Weight jump = data_->heuristic.Score(open_dest, close_src, Weight::One());
+  Enqueue(close_arc.nextstate,
+          Times(data_->chart.GetItem(id1).weight,
+                Times(open_arc.weight,
+                      Times(jump, close_arc.weight))),
+          Parent::PromiseParent(id1, open_arc, close_src, close_arc));
 }
 
 template <class Arc> inline
@@ -928,7 +959,7 @@ void NewNShortestPath<Arc>::Prover::Enqueue(StateId state, Weight weight, Parent
     ItemId id = data_->chart.AddItem(start_, state,
                                      weight, priority,
                                      parent);
-    // VLOG(0) << "Prover(" << start_ << "," << final_ << "): enqueue " << state << " as " << id << " via " << parent.item1 << " + " << parent.item2 << " weight " << weight << " priority " << priority;
+    // VLOG(0) << "Prover(" << start_ << "," << final_ << "): enqueue " << state << " as item " << id << " via item " << parent.item1 << " + item " << parent.item2 << " weight " << weight << " priority " << priority;
     queue_.Insert(id);
     ++data_->n_enqueued_;
   }
@@ -937,18 +968,28 @@ void NewNShortestPath<Arc>::Prover::Enqueue(StateId state, Weight weight, Parent
 template <class Arc> inline
 ItemId NewNShortestPath<Arc>::Prover::Dequeue() {
   ItemId id = queue_.Pop();
-  // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue " << data_->chart.GetItem(id).state << "@" << id << " weight " << data_->chart.GetItem(id).weight
+  // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue " << data_->chart.GetItem(id).state << " as item " << id << " weight " << data_->chart.GetItem(id).weight
   //         << " priority " << data_->chart.GetItem(id).priority;
   Parent parent = data_->chart.GetItem(id).parent;
+  if (parent.IsPromiseParent()) {
+    // This is a promise of proof; now actually prove it.
+    // VLOG(0) << "Prover(" << start_ << "," << final_ << "): forcing promise via " << parent.arc1.nextstate << "~>" << parent.src2;
+    ItemId id2 = pool_->GetProver(parent.arc1.nextstate, parent.src2)->Head();
+    // VLOG(0) << "Prover(" << start_ << "," << final_ << "): promise forced with item " << id2;
+    data_->chart.ForcePromise(id, id2);
+    parent = data_->chart.GetItem(id).parent;
+  }
+
   if (parent.IsParParent()) {
     ItemId id2 = parent.item2;
     const Item &item2 = data_->chart.GetItem(id2);
     StateId start2 = item2.start, state2 = item2.state;
     ItemId next2 = item2.next;
+    // VLOG(0) << "LALALA " << id2 << " " << next2 << " " << start2 << "~>" << state2;
     if (next2 == id2)              // last item proved; not necessarily last item of all
-      pool_->GetProver(start2, state2)->Advance(id2);
+      next2 = pool_->GetProver(start2, state2)->Advance(id2);
     if (next2 != kNoItemId) {
-      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue triggered " << start2 << "~>" << state2 << " complete " << next2;
+      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): dequeue triggered " << start2 << "~>" << state2 << " complete item " << next2;
       Complete(parent.item1, parent.arc1, next2, parent.arc2);
     }
   }
