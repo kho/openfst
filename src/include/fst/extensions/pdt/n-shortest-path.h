@@ -524,7 +524,7 @@ void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem1(const Item &item1, Ite
                                                           Label open_paren, const Arc &arc1) {
   StateId open_dest = arc1.nextstate;
 
-  for (typename PdtParenData<Arc>::Iterator close_it = pdata_.FindClose(open_paren, open_dest);
+  for (typename PdtParenData<Arc>::CloseIterator close_it = pdata_.FindClose(open_paren, open_dest);
        !close_it.Done(); close_it.Next()) {
     const FullArc<Arc> &fa = close_it.Value();
     StateId close_src = fa.state;
@@ -544,7 +544,7 @@ void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem2(const Item &item2, Ite
                                                           Label open_paren, const Arc &arc2) {
   StateId close_src = item2.state;
 
-  for (typename PdtParenData<Arc>::Iterator open_it = pdata_.FindOpen(open_paren, close_src);
+  for (typename PdtParenData<Arc>::OpenIterator open_it = pdata_.FindOpen(open_paren, close_src);
        !open_it.Done(); open_it.Next()) {
     const FullArc<Arc> &fa = open_it.Value();
     StateId open_src = fa.state;
@@ -910,7 +910,7 @@ void NewNShortestPath<Arc>::Prover::ProcArc(ItemId id, const Arc &arc) {
     // open paren
     ItemId id1 = id;
     StateId open_dest = arc.nextstate;
-    for (typename PdtParenData<Arc>::Iterator close_it =
+    for (typename PdtParenData<Arc>::CloseIterator close_it =
              data_->pdata.FindClose(open_paren, open_dest);
          !close_it.Done(); close_it.Next()) {
       const FullArc<Arc> &fa = close_it.Value();

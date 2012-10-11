@@ -37,28 +37,7 @@ struct FullArc {
   }
 };
 
-} // namespace pdt
-} // namespace fst
 
-namespace std {
-namespace tr1 {
-template <class Arc>
-struct hash<fst::pdt::FullArc<Arc> > {
-  size_t operator()(const fst::pdt::FullArc<Arc> &fa) const {
-    size_t value = fa.state;
-    value = 1000003 * value ^ fa.arc.ilabel;
-    value = 1000003 * value ^ fa.arc.olabel;
-    value = 1000003 * value ^ fa.arc.nextstate;
-    value = 1000003 * value ^ fa.arc.weight.Hash();
-    return value;
-  }
-};
-} // namespace tr1
-} // namespace std
-
-
-namespace fst {
-namespace pdt {
 //
 // PdtParenData: provides closing/opening arcs for opening/closing
 // parentheses and states; also assigns paren ids.
@@ -70,63 +49,108 @@ class PdtParenData {
   typedef typename Arc::StateId StateId;
   typedef typename Arc::Weight Weight;
   typedef unordered_map<Label, Label> ParenIdMap;
-  typedef const FullArc<Arc> *FullArcPtr;
-  typedef unordered_set<FullArc<Arc> > FullArcSet;
-  typedef unordered_set<FullArcPtr> FullArcPtrSet;
-  typedef unordered_multimap<ParenState<Arc>, FullArcPtr, typename ParenState<Arc>::Hash> ParenArcMap;
-  typedef unordered_map<ParenState<Arc>, FullArcPtrSet, typename ParenState<Arc>::Hash> SureMap;
-  // typedef unordered_multimap<StateId, StateId> SubFinalMap;
+  typedef unordered_set<StateId> StateSet;
+  typedef unordered_map<ParenState<Arc>, StateSet, typename ParenState<Arc>::Hash> ReachMap;
+  typedef unordered_multimap<ParenState<Arc>, Arc, typename ParenState<Arc>::Hash> ArcMap;
 
  public:
-  // Iterator through full arcs
-  class Iterator {
+  class OpenIterator {
    public:
     bool Done() const {
-      return at_ == end_;
-    }
+      return st_at_ == st_end_;
+    };
 
     void Next() {
-      ++at_;
+      ++ar_at_;
+      if (ar_at_ == ar_end_) {
+        ++st_at_;
+        SetRange();
+      }
     }
 
-    const FullArc<Arc> &Value() const {
-      return **at_;
+    FullArc<Arc> Value() const {
+      FullArc<Arc> ret(kNoStateId, ar_at_->second);
+      ret.state = ret.arc.nextstate;
+      ret.arc.nextstate = *st_at_;
+      return ret;
     }
 
    private:
-    typedef typename FullArcPtrSet::const_iterator SetIter;
-    Iterator() : at_(), end_() {}
-    Iterator(SetIter begin, SetIter end) :
-        at_(begin), end_(end) {}
-    SetIter at_, end_;
-    template <class A>
-    friend class PdtParenData;
+    typedef typename StateSet::const_iterator StIter;
+    typedef typename ArcMap::const_iterator ArIter;
+
+    OpenIterator() :
+        paren_(kNoLabel), st_at_(), st_end_(), ar_at_(), ar_end_(), open_arcs_(NULL) {
+    }
+
+    OpenIterator(Label open_paren, const StateSet &open_dests, const ArcMap &open_arcs) :
+        paren_(open_paren), st_at_(open_dests.begin()), st_end_(open_dests.end()), open_arcs_(&open_arcs) {
+      SetRange();
+    }
+
+    void SetRange() {
+      if (Done())
+        return;
+      pair<ArIter, ArIter> range = open_arcs_->equal_range(ParenState<Arc>(paren_, *st_at_));
+      ar_at_ = range.first;
+      ar_end_ = range.second;
+    }
+
+    Label paren_;
+    StIter st_at_, st_end_;
+    ArIter ar_at_, ar_end_;
+    const ArcMap *open_arcs_;
+
+    template <class A> friend class PdtParenData;
   };
 
-  // // Iterator through sub-final states
-  // class SubFinalIterator {
-  //  public:
-  //   bool Done() const {
-  //     return at_ == end_;
-  //   }
+  class CloseIterator {
+   public:
+    bool Done() const {
+      return st_at_ == st_end_;
+    };
 
-  //   void Next() {
-  //     ++at_;
-  //   }
+    void Next() {
+      ++ar_at_;
+      if (ar_at_ == ar_end_) {
+        ++st_at_;
+        SetRange();
+      }
+    }
 
-  //   StateId Value() const {
-  //     return at_->second;
-  //   }
+    FullArc<Arc> Value() const {
+      FullArc<Arc> ret(*st_at_, ar_at_->second);
+      return ret;
+    }
 
-  //  private:
-  //   typedef typename SubFinalMap::const_iterator MapIter;
-  //   SubFinalIterator() : at_(), end_() {}
-  //   SubFinalIterator(MapIter begin, MapIter end) :
-  //       at_(begin), end_(end) {}
+   private:
+    typedef typename StateSet::const_iterator StIter;
+    typedef typename ArcMap::const_iterator ArIter;
 
-  //   MapIter at_, end_;
-  //   template <class A> friend class PdtParenData;
-  // };
+    CloseIterator() :
+        paren_(kNoLabel), st_at_(), st_end_(), ar_at_(), ar_end_(), close_arcs_(NULL) {
+    }
+
+    CloseIterator(Label open_paren, const StateSet &close_srcs, const ArcMap &close_arcs) :
+        paren_(open_paren), st_at_(close_srcs.begin()), st_end_(close_srcs.end()), close_arcs_(&close_arcs) {
+      SetRange();
+    }
+
+    void SetRange() {
+      if (Done())
+        return;
+      pair<ArIter, ArIter> range = close_arcs_->equal_range(ParenState<Arc>(paren_, *st_at_));
+      ar_at_ = range.first;
+      ar_end_ = range.second;
+    }
+
+    Label paren_;
+    StIter st_at_, st_end_;
+    ArIter ar_at_, ar_end_;
+    const ArcMap *close_arcs_;
+
+    template <class A> friend class PdtParenData;
+  };
 
   // The constructor only assigns paren ids
   PdtParenData(const vector<pair<Label, Label> > &parens) :
@@ -148,7 +172,7 @@ class PdtParenData {
     return it == open_paren_.end() ? kNoLabel : it->second;
   }
 
-  // Finds all open paren arcs
+  // Finds all open/close paren arcs
   void Prepare(const Fst<Arc> &fst) {
     if (finalized_) return;
     for (StateIterator<Fst<Arc> > siter(fst); !siter.Done(); siter.Next()) {
@@ -157,11 +181,13 @@ class PdtParenData {
         const Arc &arc = aiter.Value();
         Label open_paren = OpenParenId(arc.ilabel);
         if (open_paren == arc.ilabel) {
-          FullArcPtr fa_ptr = FindOrAddArc(s, arc);
-          open_arcs_.insert(make_pair(ParenState<Arc>(open_paren, arc.nextstate), fa_ptr));
+          Arc open_arc(arc);
+          StateId open_src = s, open_dest = open_arc.nextstate;
+          open_arc.nextstate = open_src;
+          open_arcs_.insert(make_pair(ParenState<Arc>(open_paren, open_dest), open_arc));
         } else if (open_paren != kNoLabel) {
-          FullArcPtr fa_ptr = FindOrAddArc(s, arc);
-          close_arcs_.insert(make_pair(ParenState<Arc>(open_paren, fa_ptr->state), fa_ptr));
+          StateId close_src = s;
+          close_arcs_.insert(make_pair(ParenState<Arc>(open_paren, close_src), arc));
         }
       }
     }
@@ -169,53 +195,40 @@ class PdtParenData {
 
   // Should be called after all close paren arcs have been seen
   void Finalize() {
-    open_arcs_.clear();
-    close_arcs_.clear();
     finalized_ = true;
   }
 
-  void ReportOpenParen(StateId open_src, const Arc &open_arc, StateId close_src, Label open_paren) {
-    FullArcPtr open_fa_ptr = FindOrAddArc(open_src, open_arc);
-    StateId open_dest = open_arc.nextstate;
-    for (typename ParenArcMap::const_iterator it = close_arcs_.find(ParenState<Arc>(open_paren, close_src));
-         it != open_arcs_.end() && it->first == ParenState<Arc>(open_paren, close_src); ++it) {
-      FullArcPtr close_fa_ptr = it->second;
-      open_map_[ParenState<Arc>(open_paren, close_src)].insert(open_fa_ptr);
-      close_map_[ParenState<Arc>(open_paren, open_dest)].insert(close_fa_ptr);
-    }
+  void ReportOpenParen(StateId open_dest, StateId close_src, Label open_paren) {
+    // Make sure there is close_src - open_paren -> ...
+    if (close_arcs_.find(ParenState<Arc>(open_paren, close_src)) != close_arcs_.end())
+      ReportReacheable(open_dest, close_src, open_paren);
   }
 
-  void ReportCloseParen(StateId open_dest, Label open_paren, StateId close_src, const Arc &close_arc) {
-    FullArcPtr close_fa_ptr = FindOrAddArc(close_src, close_arc);
-    for (typename ParenArcMap::const_iterator it = open_arcs_.find(ParenState<Arc>(open_paren, open_dest));
-         it != open_arcs_.end() && it->first == ParenState<Arc>(open_paren, open_dest); ++it) {
-      FullArcPtr open_fa_ptr = it->second;
-      open_map_[ParenState<Arc>(open_paren, close_src)].insert(open_fa_ptr);
-      close_map_[ParenState<Arc>(open_paren, open_dest)].insert(close_fa_ptr);
-    }
+  void ReportCloseParen(StateId open_dest, StateId close_src, Label open_paren) {
+    // Make sure there is ... - open_paren -> open_dest
+    if (open_arcs_.find(ParenState<Arc>(open_paren, open_dest)) != open_arcs_.end())
+      ReportReacheable(open_dest, close_src, open_paren);
   }
 
   // Returns an Iterator through all open paren arcs reachable to
   // close_src with a matching paren.
-  Iterator FindOpen(Label open_paren, StateId close_src) const {
-    return Find(open_paren, close_src, open_map_);
+  OpenIterator FindOpen(Label open_paren, StateId close_src) const {
+    typename ReachMap::const_iterator it = open_map_.find(ParenState<Arc>(open_paren, close_src));
+    if (it == open_map_.end())
+      return OpenIterator();
+    else
+      return OpenIterator(open_paren, it->second, open_arcs_);
   }
 
   // Returns an Iterator through all close paren arcs reachable from
   // open_dest with a matching paren.
-  Iterator FindClose(Label open_paren, StateId open_dest) const {
-    return Find(open_paren, open_dest, close_map_);
+  CloseIterator FindClose(Label open_paren, StateId open_dest) const {
+    typename ReachMap::const_iterator it = close_map_.find(ParenState<Arc>(open_paren, open_dest));
+    if (it == close_map_.end())
+      return CloseIterator();
+    else
+      return CloseIterator(open_paren, it->second, close_arcs_);
   }
-
-  // void ReportSubFinal(StateId substart, StateId subfinal) {
-  //   subfinals_.insert(make_pair(substart, subfinal));
-  // }
-
-  // SubFinalIterator FindSubFinal(StateId substart) {
-  //   pair<typename SubFinalMap::const_iterator, typename SubFinalMap::const_iterator> p =
-  //       subfinals_.equal_range(substart);
-  //   return SubFinalIterator(p.first, p.second);
-  // }
 
  private:
   // Maps each paren label to its open paren label
@@ -226,24 +239,15 @@ class PdtParenData {
     }
   }
 
-  Iterator Find(Label paren, StateId state, const SureMap &map) const {
-    typename SureMap::const_iterator it = map.find(ParenState<Arc>(paren, state));
-    if (it == map.end())
-      return Iterator();
-    else
-      return Iterator(it->second.begin(), it->second.end());
-  }
-
-  FullArcPtr FindOrAddArc(StateId src, const Arc &arc) {
-    return &(*full_arcs_.insert(FullArc<Arc>(src, arc)).first);
+  void ReportReacheable(StateId open_dest, StateId close_src, Label open_paren) {
+    open_map_[ParenState<Arc>(open_paren, close_src)].insert(open_dest);
+    close_map_[ParenState<Arc>(open_paren, open_dest)].insert(close_src);
   }
 
   bool finalized_;
   ParenIdMap open_paren_;
-  SureMap open_map_, close_map_;
-  ParenArcMap open_arcs_, close_arcs_;
-  FullArcSet full_arcs_;
-  // SubFinalMap subfinals_;
+  ReachMap open_map_, close_map_;
+  ArcMap open_arcs_, close_arcs_;
 };
 
 } // namespace pdt

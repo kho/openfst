@@ -420,8 +420,7 @@ void InsideAlgo<Arc, Queue>::ProcArc(StateId start, StateId state,
     // all inside items from arc.nextstate is proved
     TryCompleteAsItem1(start, state, item, open_paren, arc);
   } else {               // close paren
-    pdata_->ReportCloseParen(start, open_paren, state, arc);
-    // pdata_->ReportSubFinal(start, state);
+    pdata_->ReportCloseParen(start, state, open_paren);
   }
 }
 
@@ -485,7 +484,7 @@ void InsideAlgo<Arc, Queue>::TryCompleteAsItem1(StateId start1, StateId state1, 
                                                 Label open_paren, const Arc &arc1) {
   // VLOG(0) << "TryCompleteAsItem1 " << start1 << "~>" << state1 << " " << arc1.nextstate;
   StateId open_dest = arc1.nextstate;
-  for (typename PdtParenData<Arc>::Iterator close_it = pdata_->FindClose(open_paren, open_dest);
+  for (typename PdtParenData<Arc>::CloseIterator close_it = pdata_->FindClose(open_paren, open_dest);
        !close_it.Done(); close_it.Next()) {
     const FullArc<Arc> &fa = close_it.Value();
     StateId close_src = fa.state;
@@ -641,7 +640,7 @@ template <class Arc, template <class> class Queue> inline
 void OutsideAlgo<Arc, Queue>::Down(StateId start, StateId state, ItemId outer, const FullArc<Arc> &close_fa, Label open_paren) {
   StateId q1 = start, q4 = close_fa.state;
 
-  for (typename PdtParenData<Arc>::Iterator it = pdata_->FindOpen(open_paren, q4);
+  for (typename PdtParenData<Arc>::OpenIterator it = pdata_->FindOpen(open_paren, q4);
        !it.Done(); it.Next()) {
     const FullArc<Arc> &open_fa = it.Value();
     StateId q2 = open_fa.state, q3 = open_fa.arc.nextstate;
@@ -783,8 +782,6 @@ class ReverseInsideAlgo {
 
     pdata_->Prepare(*ifst_);
 
-    // pdata_->ReportSubFinal(ifst_->Start(), kSuperfinal);
-
     GetDistance(kSuperfinal);
 
     // At this point all reachable paren pairs have been visited thus
@@ -887,8 +884,7 @@ void ReverseInsideAlgo<Arc, Queue>::ProcArc(StateId start, const Arc &arc, ItemI
   if (open_paren == kNoLabel) {     // lexical arc
     Scan(start, arc, item, state);
   } else if (open_paren == arc.ilabel) { // open paren
-    pdata_->ReportOpenParen(start, arc, state, open_paren);
-    // pdata_->ReportSubFinal(start, state);
+    pdata_->ReportOpenParen(arc.nextstate, state, open_paren);
   } else {                              // close paren
     GetDistance(start);
     // At this point all relevant open paren is known to pdata_ and
@@ -922,7 +918,7 @@ void ReverseInsideAlgo<Arc, Queue>::TryComplete(StateId state1, const Arc &arc2,
                                                 ItemId item2, StateId state2,
                                                 Label open_paren) {
   StateId close_src = state1;
-  for (typename PdtParenData<Arc>::Iterator open_it = pdata_->FindOpen(open_paren, close_src);
+  for (typename PdtParenData<Arc>::OpenIterator open_it = pdata_->FindOpen(open_paren, close_src);
        !open_it.Done(); open_it.Next()) {
     const FullArc<Arc> &fa = open_it.Value();
     StateId start1 = fa.state;
