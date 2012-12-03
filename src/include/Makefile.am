@@ -17,10 +17,12 @@ endif
 if HAVE_PDT
 pdt_include_headers = fst/extensions/pdt/collection.h \
 fst/extensions/pdt/compose.h fst/extensions/pdt/expand.h \
-fst/extensions/pdt/info.h fst/extensions/pdt/paren.h \
-fst/extensions/pdt/pdt.h fst/extensions/pdt/pdtlib.h \
-fst/extensions/pdt/pdtscript.h fst/extensions/pdt/replace.h \
-fst/extensions/pdt/reverse.h fst/extensions/pdt/shortest-path.h
+fst/extensions/pdt/info.h fst/extensions/pdt/inside-outside.h \
+fst/extensions/pdt/n-shortest-path.h fst/extensions/pdt/paren-data.h \
+fst/extensions/pdt/paren.h fst/extensions/pdt/pdt.h \
+fst/extensions/pdt/pdtlib.h fst/extensions/pdt/pdtscript.h \
+fst/extensions/pdt/replace.h fst/extensions/pdt/reverse.h \
+fst/extensions/pdt/shortest-path.h
 endif
 
 script_include_headers = fst/script/arcsort.h fst/script/arg-packs.h \
