@@ -60,7 +60,6 @@ class OutsideHeuristic {
     OutWeight outside_weight = item == kNoItemId ?
         OutWeightOp<InWeight>::Zero() :
         chart_.GetOutsideWeight(item);
-    // VLOG(0) << "Outside score: " << start << "~>" << state << ":" << weight;
     return OutWeightOp<InWeight>::MiddleTimes(outside_weight, weight);
   }
 
@@ -505,6 +504,7 @@ void PdtNShortestPath<Arc, Heuristic>::ProcArc(const Item &item, ItemId item_id,
 
 template <class Arc, template <class> class Heuristic> inline
 void PdtNShortestPath<Arc, Heuristic>::Scan(const Item &item, ItemId item_id, const Arc &arc) {
+  // VLOG(0) << "Scan " << item.start << "~>" << item.state << "->" << arc.nextstate << " " << item.weight << " x " << arc.weight << " = " << Times(item.weight, arc.weight);
   Enqueue(item.start, arc.nextstate,
           Times(item.weight, arc.weight),
           ItemParent::Scan(item_id, arc));
@@ -514,7 +514,7 @@ template <class Arc, template <class> class Heuristic> inline
 void PdtNShortestPath<Arc, Heuristic>::Complete(const Item &item1, ItemId item1_id, const Arc &arc1,
                                                 const Item &item2, ItemId item2_id, const Arc &arc2) {
   Enqueue(item1.start, arc2.nextstate,
-          Times(item1.weight, Times(arc1.weight, Times (item2.weight, arc2.weight))),
+          Times(item1.weight, Times(arc1.weight, Times(item2.weight, arc2.weight))),
           ItemParent::Complete(item1_id, arc1, item2_id, arc2, opts_.keep_parentheses));
 }
 
@@ -533,6 +533,7 @@ void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem1(const Item &item1, Ite
          !item2_iter.Done(); item2_iter.Next()) {
       ItemId item2_id = item2_iter.Value();
       const Item &item2 = theorems_.GetItem(item2_id);
+      // VLOG(0) << "Complete1 " << item1.start << "~>" << item1.state << "->" << arc1.nextstate << "=" << item2.start << "~>" << item2.state << "->" << arc2.nextstate << " " << item1.weight << " x " << arc1.weight << " x " << item2.weight << " x " << arc2.weight << " = " << Times(item1.weight, Times(arc1.weight, Times(item2.weight, arc2.weight)));
       Complete(item1, item1_id, arc1, item2, item2_id, arc2);
     }
   }
@@ -549,10 +550,13 @@ void PdtNShortestPath<Arc, Heuristic>::TryCompleteAsItem2(const Item &item2, Ite
     const FullArc<Arc> &fa = open_it.Value();
     StateId open_src = fa.state;
     const Arc &arc1 = fa.arc;
+    if (arc1.nextstate != item2.start)
+      continue;
     for (ItemIterator item1_iter(theorems_, open_src);
          !item1_iter.Done(); item1_iter.Next()) {
       ItemId item1_id = item1_iter.Value();
       const Item &item1 = theorems_.GetItem(item1_id);
+      // VLOG(0) << "Complete2 " << item1.start << "~>" << item1.state << "->" << arc1.nextstate << "=" << item2.start << "~>" << item2.state << "->" << arc2.nextstate << " " << item1.weight << " x " << arc1.weight << " x " << item2.weight << " x " << arc2.weight << " = " << Times(item1.weight, Times(arc1.weight, Times(item2.weight, arc2.weight)));
       Complete(item1, item1_id, arc1, item2, item2_id, arc2);
     }
   }
