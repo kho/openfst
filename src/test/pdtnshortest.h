@@ -86,7 +86,7 @@ class PdtNShortestPathTester {
     VectorFst<Arc> ofst1, ofst2;
     ShortestPath(fst, parens, &ofst1);
     if (verbose_) VLOG(0) << "TestSingleShortest: " << "ShortestPath finished";
-    NShortestPath(fst, parens, &ofst2, 1);
+    NShortestPath(fst, parens, &ofst2, 1, true);
     if (verbose_) VLOG(0) << "TestSingleShortest: " << "NShortestPath finished";
     CHECK(EquivPaths(fst, parens, ofst1, ofst2));
     if (verbose_)
@@ -95,9 +95,10 @@ class PdtNShortestPathTester {
 
   void TestNShortest(const Fst<Arc> &fst, const Parens &parens, size_t n) {
     VectorFst<Arc> ofst1, ofst2;
-    NShortestPath(fst, parens, &ofst2, n);
+    NShortestPath(fst, parens, &ofst1, n, true);
     if (verbose_) VLOG(0) << "TestNShortest: " << "NShortestPath finished";
-    NShortestPathViaExpand(fst, parens, &ofst1, n);
+    NShortestPathViaExpand(fst, parens, &ofst2, n);
+    // NShortestPath(fst, parens, &ofst2, n);
     if (verbose_) VLOG(0) << "TestNShortest: " << "NShortestPathViaExpand finished";
     CHECK(EquivPaths(fst, parens, ofst1, ofst2));
     if (verbose_)
@@ -132,17 +133,23 @@ class PdtNShortestPathTester {
   }
 
   void TimeNShortest(const Fst<Arc> &fst, const Parens &parens, size_t n) {
-    VectorFst<Arc> ofst1, ofst2;
-    string comment1("NShortestPathViaExpand"), comment2("NShortestPath");
-
-    // watch_->Reset();
-    // NShortestPathViaExpand(fst, parens, &ofst1, n);
-    // watch_->Lap(comment1);
-    // watch_->Report(std::cout);
+    VectorFst<Arc> ofst1, ofst2, ofst3;
+    string comment1("NShortestPathViaExpand"), comment2("NShortestPath-A*"),
+        comment3("NShortestPath-Lazy");
 
     watch_->Reset();
     NShortestPath(fst, parens, &ofst2, n);
     watch_->Lap(comment2);
+    watch_->Report(std::cout);
+
+    watch_->Reset();
+    NShortestPath(fst, parens, &ofst2, n, true);
+    watch_->Lap(comment3);
+    watch_->Report(std::cout);
+
+    watch_->Reset();
+    NShortestPathViaExpand(fst, parens, &ofst1, n);
+    watch_->Lap(comment1);
     watch_->Report(std::cout);
   }
 
@@ -208,11 +215,17 @@ class PdtNShortestPathTester {
     // cout << "Accepting " << AcceptingPath(fst, parens, empty_path) << endl;
 
     GetPaths(fst1, &paths1);
-    UniquePaths(&paths1);
     GetPaths(fst2, &paths2);
-    UniquePaths(&paths2);
-
     if (verbose_) {
+      VLOG(0) << "Before UniquePaths,";
+      VLOG(0) << "fst1 has " << paths1.size() << " paths";
+      VLOG(0) << "fst2 has " << paths2.size() << " paths";
+    }
+
+    UniquePaths(&paths1);
+    UniquePaths(&paths2);
+    if (verbose_) {
+      VLOG(0) << "After UniquePaths,";
       VLOG(0) << "fst1 has " << paths1.size() << " paths";
       VLOG(0) << "fst2 has " << paths2.size() << " paths";
       VLOG(0) << "precision tolerance: " << delta;
@@ -227,6 +240,8 @@ class PdtNShortestPathTester {
         cout << endl;
         return false;
       }
+    }
+    for (size_t i = 0; i < paths2.size(); ++i) {
       if (!AcceptingPath(fst, parens, paths2[i].first)) {
         cout << i << "-th path(2) is not accepted" << endl;
         for (typename vector<Label>::const_iterator it = paths2[i].first.begin();

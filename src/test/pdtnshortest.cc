@@ -124,18 +124,15 @@ struct hash<pair<int, int> > {
 
 template <class Arc>
 void InsideOutside(const Fst<Arc> &fst, const vector<pair<typename Arc::Label, typename Arc::Label> > &parens) {
+  PdtParenData<Arc> pdata(parens);
+  InsideOutsideChart<Arc> chart;
+
   StopWatch &watch = *StopWatch::Get(StopWatch::New());
 
-  PdtParenData<Arc> pdata(parens);
-
-  watch.Lap("pdata");
-
-  InsideChart<Arc> in_chart;
-  InsideAlgo<Arc>(fst, parens, &pdata).FillChart(&in_chart);
+  InsideAlgo<Arc>(fst, parens, &pdata).FillChart(&chart);
   watch.Lap("inside");
 
-  OutsideChart<Arc> out_chart;
-  OutsideAlgo<Arc>(fst, parens, &pdata).FillChart(&out_chart, &in_chart);
+  OutsideAlgo<Arc>(fst, parens, &pdata).FillChart(&chart);
   watch.Lap("outside");
 
   watch.Report(cerr);
@@ -153,7 +150,11 @@ int main(int argc, char *argv[]) {
     vector<pair<StdArc::Label, StdArc::Label> > parens;
     ReadLabelPairs(parens_in, &parens);
 
-    VLOG(0) << "pdt has " << CountStates(fst) << " states and "
+    size_t num_arcs = 0;
+    for (StateIterator<VectorFst<StdArc> > it(fst); !it.Done(); it.Next())
+      num_arcs += fst.NumArcs(it.Value());
+
+    VLOG(0) << "pdt has " << CountStates(fst) << " states, " << num_arcs << " arcs and "
             << parens.size() << " pairs of parens";
 
     if (op == "io")
@@ -162,7 +163,86 @@ int main(int argc, char *argv[]) {
       tester.Test(fst, parens);
     else if (op == "time")
       tester.Time(fst, parens);
-    else
+    else if (op == "comp") {
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        ShortestPath(fst, parens, &o);
+        Timer::Get(1).Record("ShortestPath");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1);
+        Timer::Get(1).Record("A*-1");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1);
+        Timer::Get(1).Record("A*-1");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 10);
+        Timer::Get(1).Record("A*-10");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 100);
+        Timer::Get(1).Record("A*-100");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1000);
+        Timer::Get(1).Record("A*-1000");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 10000);
+        Timer::Get(1).Record("A*-10000");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1, true);
+        Timer::Get(1).Record("Lazy-1");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1, true);
+        Timer::Get(1).Record("Lazy-1");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 10, true);
+        Timer::Get(1).Record("Lazy-10");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 100, true);
+        Timer::Get(1).Record("Lazy-100");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 1000, true);
+        Timer::Get(1).Record("Lazy-1000");
+      }
+      {
+        VectorFst<StdArc> o;
+        Timer::Get(1).Start();
+        NShortestPath(fst, parens, &o, 10000, true);
+        Timer::Get(1).Record("Lazy-10000");
+      }
+    } else
       VLOG(0) << "Unknown op: " << op;
   } else {
     // simple test
