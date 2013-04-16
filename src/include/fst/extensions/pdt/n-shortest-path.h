@@ -29,15 +29,15 @@ using std::vector;
 namespace fst {
 struct PdtNShortestPathOptions {
   size_t nshortest;                     // how many paths to return
-  size_t max_pop; // max number search states to pop for a unique pair of PDT states
   bool unique;  // TODO: only return paths with distinct input strings
   bool keep_parentheses;  // whether to keep parentheses in the output
+  size_t max_pop; // max number search states to pop for a unique pair of PDT states
   PdtNShortestPathOptions(size_t n,
-                          size_t pop_limit = 0,
                           bool uniq = false,
-                          bool kp = false) :
-      nshortest(n), max_pop(pop_limit), unique(uniq),
-      keep_parentheses(kp) {}
+                          bool kp = false,
+                          size_t pop_limit = 0)
+      : nshortest(n), unique(uniq), keep_parentheses(kp),
+        max_pop(pop_limit){}
 };
 
 namespace pdt {
@@ -1005,31 +1005,40 @@ ItemId NewNShortestPath<Arc>::Prover::Dequeue() {
 
 } // namespace pdt
 
-template <class Arc, template <class> class Heuristic>
-size_t NShortestPath(const Fst<Arc> &ifst,
-                     const vector<pair<typename Arc::Label,
-                     typename Arc::Label> > &parens,
-                     MutableFst<Arc> *ofst,
-                     const PdtNShortestPathOptions &opts) {
-  pdt::PdtNShortestPath<Arc, Heuristic> pnsp(ifst, parens, opts);
-  return pnsp.NShortestPath(ofst);
-}
+// template <class Arc, template <class> class Heuristic>
+// size_t NShortestPath(const Fst<Arc> &ifst,
+//                      const vector<pair<typename Arc::Label,
+//                      typename Arc::Label> > &parens,
+//                      MutableFst<Arc> *ofst,
+//                      const PdtNShortestPathOptions &opts) {
+//   pdt::PdtNShortestPath<Arc, Heuristic> pnsp(ifst, parens, opts);
+//   return pnsp.NShortestPath(ofst);
+// }
+
+// template <class Arc>
+// size_t NShortestPath(const Fst<Arc> &ifst,
+//                      const vector<pair<typename Arc::Label,
+//                      typename Arc::Label> > &parens,
+//                      MutableFst<Arc> *ofst,
+//                      size_t n) {
+//   return NShortestPath<Arc, pdt::OutsideHeuristic>(ifst, parens, ofst, PdtNShortestPathOptions(n));
+// }
 
 template <class Arc>
 size_t NShortestPath(const Fst<Arc> &ifst,
-                     const vector<pair<typename Arc::Label,
-                     typename Arc::Label> > &parens,
+                     const vector<pair<typename Arc::Label, typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
                      size_t n) {
-  return NShortestPath<Arc, pdt::OutsideHeuristic>(ifst, parens, ofst, PdtNShortestPathOptions(n));
+  pdt::NewNShortestPath<Arc> solver(ifst,parens, PdtNShortestPathOptions(n));
+  return solver.NShortestPath(ofst);
 }
 
 template <class Arc>
 size_t NShortestPath(const Fst<Arc> &ifst,
                      const vector<pair<typename Arc::Label, typename Arc::Label> > &parens,
                      MutableFst<Arc> *ofst,
-                     size_t n, bool) {
-  pdt::NewNShortestPath<Arc> solver(ifst,parens, PdtNShortestPathOptions(n));
+                     const PdtNShortestPathOptions &opts) {
+  pdt::NewNShortestPath<Arc> solver(ifst,parens, opts);
   return solver.NShortestPath(ofst);
 }
 
