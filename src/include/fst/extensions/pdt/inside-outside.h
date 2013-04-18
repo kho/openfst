@@ -42,54 +42,54 @@ using std::pair;
 #include <vector>
 using std::vector;
 
-#include <ctime>
-using std::clock;
-using std::clock_t;
-class Timer {
- public:
-  typedef int Id;
+// #include <ctime>
+// using std::clock;
+// using std::clock_t;
+// class Timer {
+//  public:
+//   typedef int Id;
 
-  static Timer &Get(Id id) {
-    unordered_map<Id, Timer>::iterator it = pool_.find(id);
-    if (it != pool_.end()) {
-      return it->second;
-    } else {
-      return pool_.insert(make_pair(id, Timer(id))).first->second;
-    }
-  }
+//   static Timer &Get(Id id) {
+//     unordered_map<Id, Timer>::iterator it = pool_.find(id);
+//     if (it != pool_.end()) {
+//       return it->second;
+//     } else {
+//       return pool_.insert(make_pair(id, Timer(id))).first->second;
+//     }
+//   }
 
-  void Start() {
-    last_ = clock();
-  }
+//   void Start() {
+//     last_ = clock();
+//   }
 
-  void Record(const string &message) {
-    clock_t stamp = clock();
-    records_.push_back(make_pair(message, stamp - last_));
-    last_ = clock();
-  }
+//   void Record(const string &message) {
+//     clock_t stamp = clock();
+//     records_.push_back(make_pair(message, stamp - last_));
+//     last_ = clock();
+//   }
 
- private:
-  Timer(Id id) : id_(id) {}
+//  private:
+//   Timer(Id id) : id_(id) {}
 
- public:
-  ~Timer() {
-    if (!records_.empty()) {
-      VLOG(0) << "Timer " << id_;
-      for (size_t i = 0; i < records_.size(); ++i) {
-        const pair<string, clock_t> d = records_[i];
-        VLOG(0) << d.first << " " << static_cast<double>(d.second) / CLOCKS_PER_SEC * 1000 << "ms";
-      }
-    }
-  }
+//  public:
+//   ~Timer() {
+//     if (!records_.empty()) {
+//       VLOG(0) << "Timer " << id_;
+//       for (size_t i = 0; i < records_.size(); ++i) {
+//         const pair<string, clock_t> d = records_[i];
+//         VLOG(0) << d.first << " " << static_cast<double>(d.second) / CLOCKS_PER_SEC * 1000 << "ms";
+//       }
+//     }
+//   }
 
- private:
-  static unordered_map<Id, Timer> pool_;
-  Id id_;
-  clock_t last_;
-  vector<pair<string, clock_t> > records_;
-};
+//  private:
+//   static unordered_map<Id, Timer> pool_;
+//   Id id_;
+//   clock_t last_;
+//   vector<pair<string, clock_t> > records_;
+// };
 
-unordered_map<Timer::Id, Timer> Timer::pool_;
+// unordered_map<Timer::Id, Timer> Timer::pool_;
 
 namespace fst {
 namespace pdt {
@@ -324,7 +324,7 @@ class InsideAlgo {
   }
 
   void FillChart(InsideOutsideChart<Arc> *chart) {
-    Timer::Get(0).Start();
+    // Timer::Get(0).Start();
     chart_ = chart;
     chart_->Clear();
     n_dequeued_ = 0;
@@ -342,12 +342,12 @@ class InsideAlgo {
     // reported.
     pdata_->Finalize();
 
-    VLOG(0) << "Inside: expansion: " << n_dequeued_
-            << " chart: " << chart_->Size()
-            << " weight: " << chart_->GetInsideWeight(chart_->Find(ifst_->Start(), kSuperfinal));
+    // VLOG(0) << "Inside: expansion: " << n_dequeued_
+    //         << " chart: " << chart_->Size()
+    //         << " weight: " << chart_->GetInsideWeight(chart_->Find(ifst_->Start(), kSuperfinal));
 
     chart_ = NULL;
-    Timer::Get(0).Record("Inside");
+    // Timer::Get(0).Record("Inside");
   }
 
  private:
@@ -521,7 +521,7 @@ class OutsideAlgo {
 
   // chart must have been filled by InsideAlgo
   void FillChart(InsideOutsideChart<Arc> *chart) {
-    Timer::Get(0).Start();
+    // Timer::Get(0).Start();
     chart_ = chart;
     n_dequeued_ = 0;
 
@@ -563,7 +563,7 @@ class OutsideAlgo {
 
     chart_ = NULL;
     queue_ = NULL;
-    Timer::Get(0).Record("Outside");
+    // Timer::Get(0).Record("Outside");
   }
 
  private:
@@ -768,7 +768,7 @@ class ReverseInsideAlgo {
   }
 
   void FillChart(SpanWeightChart<Arc> *chart) {
-    Timer::Get(0).Start();
+    // Timer::Get(0).Start();
     chart_ = chart;
     chart_->Clear();
     n_dequeued_ = 0;
@@ -788,12 +788,12 @@ class ReverseInsideAlgo {
     // reported.
     pdata_->Finalize();
 
-    VLOG(0) << "ReverseInside: expansion: " << n_dequeued_
-            << " chart: " << chart_->Size()
-            << " weight: " << chart_->GetWeight(chart_->Find(ifst_->Start(), kSuperfinal));
+    // VLOG(0) << "ReverseInside: expansion: " << n_dequeued_
+    //         << " chart: " << chart_->Size()
+    //         << " weight: " << chart_->GetWeight(chart_->Find(ifst_->Start(), kSuperfinal));
 
     chart_ = NULL;
-    Timer::Get(0).Record("ReverseInside");
+    // Timer::Get(0).Record("ReverseInside");
   }
 
  private:

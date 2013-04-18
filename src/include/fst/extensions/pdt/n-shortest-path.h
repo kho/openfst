@@ -323,9 +323,9 @@ class PdtNShortestPath {
     Heuristic<Arc> h(*ifst_, parens_, &pdata_);
     heuristics_ = &h;
 
-    Timer::Get(0).Start();
+    // Timer::Get(0).Start();
     DoSearch();
-    Timer::Get(0).Record("A* search");
+    // Timer::Get(0).Record("A* search");
 
     if (error_) ofst->SetProperties(kError, kError);
 
@@ -856,7 +856,7 @@ class NewNShortestPath {
     ProverPool provers(&data);
     Prover *top = provers.GetProver(ifst_->Start(), kSuperfinal);
     ItemId it = kNoItemId;
-    Timer::Get(0).Start();
+    // Timer::Get(0).Start();
     while (n_found < opts_.nshortest) {
       // Prove next path
       it = top->Advance(it);
@@ -866,7 +866,7 @@ class NewNShortestPath {
       // Output path
       data.chart.ExtractPath(it, ofst);
     }
-    Timer::Get(0).Record("Reverse A*");
+    // Timer::Get(0).Record("Reverse A*");
 
     VLOG(0) << "Lazy enq " << data.n_enqueued_ << " deq " << data.n_dequeued_ << " found " << n_found;
     return n_found;
