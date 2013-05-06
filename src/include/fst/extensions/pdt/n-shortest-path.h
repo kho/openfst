@@ -705,14 +705,6 @@ class NewNShortestPath {
       ofst->SetFinal(p, GetItem(id).weight);
     }
 
-    template <class FilterWriter>
-    void ExtractPath(ItemId id, FilterWriter *fw) {
-      vector<const Arc *> l;
-      Traverse(id, &l);
-      fw->Write(l, GetItem(id).weight);
-    }
-
-   private:
     void Traverse(ItemId id, vector<const Arc *> *output) {
       const Parent &parent = GetItem(id).parent;
       if (parent.IsLexParent()) {
@@ -726,7 +718,61 @@ class NewNShortestPath {
       }
     }
 
+   private:
     vector<Item> items_;
+  };
+
+  //
+  // Trie for efficient look-up of path labels; used in `Prover` to
+  // ensure no duplicate path is included, when `unique` is true.
+  //
+  class TrieNode {
+   public:
+    TrieNode() : value_(false), children_() {}
+
+    ~TrieNode() {
+      for (typename Map::iterator it = children_.begin(); it != children_.end(); ++it)
+        delete it->second;
+    }
+
+    // Inserts the path; returns true when the sub-trie is modified
+    // (i.e. the path is new).
+    //
+    // It is an STL-style iterator type of `const Arc *`
+    template <class It>
+    bool Insert(It begin, It end) {
+      bool ret = false;
+      TrieNode *cur = this;
+      while (begin != end) {
+        Label label = (*begin)->ilabel;
+        TrieNode *child = cur->children_[label];
+        if (child == NULL) {
+          child = new TrieNode;
+          cur->children_[label] = child;
+          ret = true;
+        }
+        cur = child;
+        ++begin;
+      }
+      if (!value_) {
+        value_ = true;
+        ret = true;
+      }
+      return ret;
+    }
+
+    bool Value() const { return value_; }
+
+    TrieNode *Step(Label l) const {
+      typename Map::const_iterator it = children_.find(l);
+      return it == children_.end() ? NULL : it->second;
+    }
+
+   private:
+    typedef unordered_map<Label, TrieNode *> Map;
+
+    bool value_;
+    Map children_;
   };
 
   //
@@ -770,9 +816,9 @@ class NewNShortestPath {
   //
   class Prover {
    public:
-    Prover(StateId start, StateId final, Closure *data, ProverPool *pool) :
+    Prover(StateId start, StateId final, bool unique, Closure *data, ProverPool *pool) :
         start_(start), final_(final), data_(data), pool_(pool), queue_(ItemCompare(data)),
-        head_found_(false), head_(kNoItemId), n_dequeued_(0) {
+        head_found_(false), head_(kNoItemId), n_dequeued_(0), unique_(unique) {
       Enqueue(start_, Weight::One(), Parent::Root());
     }
 
@@ -814,6 +860,8 @@ class NewNShortestPath {
     bool head_found_;
     ItemId head_;
     size_t n_enqueued_, n_dequeued_;
+    bool unique_;
+    TrieNode trie_;
   };
 
   //
@@ -822,8 +870,8 @@ class NewNShortestPath {
   //
   class ProverPool {
    public:
-    ProverPool(Closure *data) :
-        data_(data) {}
+    ProverPool(Closure *data, bool unique) :
+        data_(data), unique_(unique) {}
 
     ~ProverPool() {
       for (typename unordered_map<Span<Arc>, Prover *>::iterator it = pool_.begin();
@@ -836,7 +884,7 @@ class NewNShortestPath {
       typename unordered_map<Span<Arc>, Prover *>::iterator it = pool_.find(sp);
       Prover *ret = NULL;
       if (it == pool_.end()) {
-        ret = new Prover(start, final, data_, this);
+        ret = new Prover(start, final, unique_, data_, this);
         pool_[sp] = ret;
       } else {
         ret = it->second;
@@ -846,102 +894,8 @@ class NewNShortestPath {
 
    private:
     Closure *data_;
-    unordered_map<Span<Arc>, Prover *> pool_;
-  };
-
-  //
-  // Filters out repeated input path (up to epsilons) when `unique` is
-  // true. Otherwise writes out all the paths.
-  //
-  // TODO: proper handling of epsilon
-  class InputFilterWriter {
-   public:
-    InputFilterWriter(bool unique, MutableFst<Arc> *ofst)
-        : unique_(unique), ofst_(ofst), trie_(), written_(0) {}
-
-    void Write(const vector<const Arc *> &arcs, const Weight &rho) {
-      bool should_write = true;
-      if (unique_) {
-        vector<Label> path;
-        for (size_t i = 0; i != arcs.size(); ++i) {
-          Label ilabel = arcs[i]->ilabel;
-          if (ilabel != 0) path.push_back(ilabel);
-        }
-        if (path.empty()) should_write = false;
-        else should_write = trie_.Insert(path.begin(), path.end());
-      }
-      if (should_write) {
-        StateId p = ofst_->Start();
-        if (p == kNoStateId) {
-          p = ofst_->AddState();
-          ofst_->SetStart(p);
-        }
-        for (size_t i = 0; i < arcs.size(); ++i) {
-          const Arc &arc = *arcs[i];
-          StateId q = ofst_->AddState();
-          ofst_->AddArc(p, Arc(arc.ilabel, arc.olabel, Weight::One(), q));
-          p = q;
-        }
-        ofst_->SetFinal(p, rho);
-        ++written_;
-      }
-    }
-
-    size_t Count() const {
-      return written_;
-    }
-
-   private:
-    class TrieNode {
-     public:
-      TrieNode() : value_(false), children_() {}
-
-      ~TrieNode() {
-        for (typename Map::iterator it = children_.begin(); it != children_.end(); ++it)
-          delete it->second;
-      }
-
-      // Inserts the path; returns true when the sub-trie is modified
-      // (i.e. the path is new).
-      template <class It>
-      bool Insert(It begin, It end) {
-        bool ret = false;
-        TrieNode *cur = this;
-        while (begin != end) {
-          TrieNode *child = cur->children_[*begin];
-          if (child == NULL) {
-            child = new TrieNode;
-            cur->children_[*begin] = child;
-            ret = true;
-          }
-          cur = child;
-          ++begin;
-        }
-        if (!value_) {
-          value_ = true;
-          ret = true;
-        }
-        return ret;
-      }
-
-      bool Value() const { return value_; }
-
-      TrieNode *Step(Label l) const {
-        typename Map::const_iterator it = children_.find(l);
-        return it == children_.end() ? NULL : it->second;
-      }
-
-     private:
-      typedef unordered_map<Label, TrieNode *> Map;
-
-      bool value_;
-      Map children_;
-    };
-
     bool unique_;
-    MutableFst<Arc> *ofst_;
-    TrieNode trie_;
-    size_t written_;
+    unordered_map<Span<Arc>, Prover *> pool_;
   };
 
   size_t NShortestPathImpl(MutableFst<Arc> *ofst) {
@@ -952,24 +906,25 @@ class NewNShortestPath {
     if (ifst_->Start() == kNoStateId)
       return 0;
 
-    InputFilterWriter filter_writer(opts_.unique, ofst);
+    size_t n_found = 0;
     Closure data(*ifst_, parens_);
-    ProverPool provers(&data);
+    ProverPool provers(&data, opts_.unique);
     Prover *top = provers.GetProver(ifst_->Start(), kSuperfinal);
     ItemId it = kNoItemId;
     // Timer::Get(0).Start();
-    while (filter_writer.Count() < opts_.nshortest) {
+    while (n_found < opts_.nshortest) {
       // Prove next path
       it = top->Advance(it);
       if (it == kNoItemId)
         break;
       // Output path
-      data.chart.ExtractPath(it, &filter_writer);
+      data.chart.ExtractPath(it, ofst);
+      ++n_found;
     }
     // Timer::Get(0).Record("Reverse A*");
 
-    VLOG(0) << "Lazy enq " << data.n_enqueued_ << " deq " << data.n_dequeued_ << " found " << filter_writer.Count();
-    return filter_writer.Count();
+    VLOG(0) << "Lazy enq " << data.n_enqueued_ << " deq " << data.n_dequeued_ << " found " << n_found;
+    return n_found;
   }
 
   const Fst<Arc> *ifst_;
@@ -995,9 +950,18 @@ ItemId NewNShortestPath<Arc>::Prover::FindNext() {
     }
     if (state == final_) {
       // We have found a goal
-      ret = id;
-      // VLOG(0) << "Prover(" << start_ << "," << final_ << "): hit " << state << " as item " << ret << " weight " << data_->chart.GetItem(id).weight;
-      break;
+      bool is_new = true;
+      if (unique_) {
+        // Check if it is really new
+        std::vector<const Arc *> path;
+        data_->chart.Traverse(id, &path);
+        is_new = trie_.Insert(path.begin(), path.end());
+      }
+      if (is_new) {
+        ret = id;
+        // VLOG(0) << "Prover(" << start_ << "," << final_ << "): hit " << state << " as item " << ret << " weight " << data_->chart.GetItem(id).weight;
+        break;
+      }
     }
   }
   return ret;
