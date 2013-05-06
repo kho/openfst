@@ -573,6 +573,10 @@ class NewNShortestPath {
                    const PdtNShortestPathOptions &opts) :
       ifst_(ifst.Copy()), parens_(parens), opts_(opts) {}
 
+  ~NewNShortestPath() {
+    delete ifst_;
+  }
+
   // Extracts n shortest paths into `ofst` following the given options
   // at construction and returns the number of paths found.
   size_t NShortestPath(MutableFst<Arc> *ofst) {
@@ -738,13 +742,13 @@ class NewNShortestPath {
     // Inserts the path; returns true when the sub-trie is modified
     // (i.e. the path is new).
     //
-    // It is an STL-style iterator type of `const Arc *`
+    // It is an STL-style iterator type of path labels
     template <class It>
     bool Insert(It begin, It end) {
       bool ret = false;
       TrieNode *cur = this;
       while (begin != end) {
-        Label label = (*begin)->ilabel;
+        Label label = *begin;
         TrieNode *child = cur->children_[label];
         if (child == NULL) {
           child = new TrieNode;
@@ -784,12 +788,17 @@ class NewNShortestPath {
     ReverseDistance<Arc> heuristic;
     Chart chart;
     size_t n_enqueued_, n_dequeued_;
+    TrieNode trie;
 
     // Note: we assume that after construction pdata has precise
     // knowledge of open/close-paren pairs.
     Closure(const Fst<Arc> &f, const vector<pair<Label, Label> > parens) :
         fst(f.Copy()), pdata(parens), heuristic(f, parens, &pdata),
         n_enqueued_(0), n_dequeued_(0) {}
+
+    ~Closure() {
+      delete fst;
+    }
   };
 
   //
@@ -861,7 +870,6 @@ class NewNShortestPath {
     ItemId head_;
     size_t n_enqueued_, n_dequeued_;
     bool unique_;
-    TrieNode trie_;
   };
 
   //
@@ -953,9 +961,19 @@ ItemId NewNShortestPath<Arc>::Prover::FindNext() {
       bool is_new = true;
       if (unique_) {
         // Check if it is really new
-        std::vector<const Arc *> path;
-        data_->chart.Traverse(id, &path);
-        is_new = trie_.Insert(path.begin(), path.end());
+        std::vector<const Arc *> arcs;
+        data_->chart.Traverse(id, &arcs);
+        std::vector<Label> labels;
+        labels.reserve(arcs.size());
+        labels.push_back(start_);
+        labels.push_back(final_);
+        for (typename std::vector<const Arc *>::const_iterator it = arcs.begin();
+             it != arcs.end(); ++it) {
+          const Arc &arc = **it;
+          if (arc.ilabel > 0)
+            labels.push_back(arc.ilabel);
+        }
+        is_new = data_->trie.Insert(labels.begin(), labels.end());
       }
       if (is_new) {
         ret = id;
